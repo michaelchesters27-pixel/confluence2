@@ -92,3 +92,24 @@ PART 4 - TEST ORDER
 8. Deploy Railway.
 9. Watch live price update.
 10. Press Idea Stats after ideas start forming/closing.
+
+
+V5 PATCH NOTE
+
+Before deploying v5, run this patch in Supabase:
+
+```text
+supabase/v5-state-machine-patch.sql
+```
+
+It safely patches the existing tables by adding:
+
+- armed status
+- armed_at
+- confirm_started_at
+- forming_touch_minutes setting
+- armed_confirmation_minutes setting
+- confirmation_hold_seconds setting
+- same_symbol_direction_cooldown_minutes setting
+
+Then deploy Netlify and Railway from the updated GitHub repo.

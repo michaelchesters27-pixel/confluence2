@@ -130,7 +130,8 @@ function renderFocus(focus, idea, live) {
   const dir = $('focusDirection');
   dir.textContent = `${String(focus.direction || '').toUpperCase()} • ${statusLabel(focus.status)}`;
   dir.className = `bias-pill ${statusClass(focus.status, focus.direction)}`;
-  $('lockInfo').textContent = `Focus lock until: ${fmtTime(focus.lock_until)} • 15 min lock`;
+  const lockText = idea?.status === 'armed' || focus.status === 'armed' ? 'armed confirmation window' : (idea?.status === 'active' || focus.status === 'active' ? 'active until TP or SL' : 'forming touch window');
+  $('lockInfo').textContent = `Focus lock until: ${fmtTime(focus.lock_until)} • ${lockText}`;
   const freshLive = isFreshLiveForFocus(focus, live);
   $('livePrice').textContent = freshLive ? formatPrice(live.price, focus.symbol) : '--';
   const src = live?.source === 'railway_twelvedata_rest_fallback' ? 'REST fallback' : 'Railway WS';
@@ -180,7 +181,13 @@ function renderIdea(focus, idea) {
     body.innerHTML = `
       <strong>${escapeHtml(idea.symbol)} ${idea.direction.toUpperCase()} idea forming.</strong><br />
       SL first: <b>${formatPrice(idea.stop_loss, idea.symbol)}</b>. TP: <b>${formatPrice(idea.take_profit, idea.symbol)}</b>. R:R: <b>1:${Number(idea.rr || 0).toFixed(2)}</b>.<br />
-      Waiting for live confirmation from the zone. No market entry yet.
+      Waiting for price to touch the correct zone. No market entry yet.
+    `;
+  } else if (idea.status === 'armed') {
+    body.innerHTML = `
+      <strong>${escapeHtml(idea.symbol)} ${idea.direction.toUpperCase()} idea armed.</strong><br />
+      Zone has been touched. SL: <b>${formatPrice(idea.stop_loss, idea.symbol)}</b>. TP: <b>${formatPrice(idea.take_profit, idea.symbol)}</b>. Planned R:R: <b>1:${Number(idea.rr || 0).toFixed(2)}</b>.<br />
+      Waiting for live confirmation/reclaim. No market entry yet.
     `;
   } else if (idea.status === 'active') {
     body.innerHTML = `
@@ -205,7 +212,7 @@ function renderGrid(assets) {
   grid.innerHTML = assets.map((m) => {
     const score = Math.round(Number(m.confluence_score || 0));
     const cls = ['market-card'];
-    if (m.status === 'forming') cls.push('hot');
+    if (m.status === 'forming' || m.status === 'armed') cls.push('hot');
     if (m.status === 'no_trade') cls.push('choppy');
     return `
       <article class="${cls.join(' ')}">
@@ -239,10 +246,14 @@ function renderStats(perf, ideas) {
   const cards = [
     ['Active win rate', `${Number(perf.winRate || 0).toFixed(1)}%`],
     ['Ideas formed', perf.totalIdeas || 0],
+    ['Armed ideas', perf.armedIdeas || 0],
     ['Triggered ideas', perf.triggeredIdeas || 0],
     ['Wins', perf.wins || 0],
     ['Losses', perf.losses || 0],
-    ['No trigger / expired', perf.noTrigger || 0],
+    ['Expired before touch', perf.expiredBeforeTouch || 0],
+    ['Expired after touch', perf.expiredAfterTouch || 0],
+    ['Invalid before entry', perf.invalidatedBeforeEntry || 0],
+    ['R:R failed trigger', perf.rrFailed || 0],
     ['Trigger rate', `${Number(perf.triggerRate || 0).toFixed(1)}%`],
     ['Average R', Number(perf.avgR || 0).toFixed(2)]
   ];

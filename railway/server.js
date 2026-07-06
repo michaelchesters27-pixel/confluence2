@@ -44,6 +44,18 @@ const state = {
 
 function num(value) { const n = Number(value); return Number.isFinite(n) ? n : null; }
 function nowIso() { return new Date().toISOString(); }
+function addMinutesIso(isoOrDate, minutes) {
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  return new Date(d.getTime() + minutes * 60_000).toISOString();
+}
+async function getSetting(key, fallback) {
+  const { data, error } = await supabase.from('eve_confluence_settings').select('value').eq('key', key).maybeSingle();
+  if (error || !data) return fallback;
+  const v = data.value;
+  if (typeof fallback === 'number') return Number(v) || fallback;
+  if (typeof fallback === 'boolean') return Boolean(v);
+  return v ?? fallback;
+}
 function tdUrl() { return `wss://ws.twelvedata.com/v1/quotes/price?apikey=${encodeURIComponent(TWELVEDATA_API_KEY)}`; }
 function restPriceUrl(symbol) { return `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(TWELVEDATA_API_KEY)}`; }
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -300,7 +312,7 @@ async function processTradeIdea(symbol, price, now) {
     .from('eve_confluence_trade_ideas')
     .select('*')
     .eq('symbol', symbol)
-    .in('status', ['forming', 'active'])
+    .in('status', ['forming', 'armed', 'active'])
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -308,6 +320,8 @@ async function processTradeIdea(symbol, price, now) {
 
   if (idea.status === 'forming') {
     await processFormingIdea(idea, price, now);
+  } else if (idea.status === 'armed') {
+    await processArmedIdea(idea, price, now);
   } else if (idea.status === 'active') {
     await processActiveIdea(idea, price, now);
   }
@@ -319,42 +333,121 @@ async function processFormingIdea(idea, price, now) {
 
   const invalidated = direction === 'buy' ? price <= Number(idea.stop_loss) : price >= Number(idea.stop_loss);
   if (invalidated) {
-    await supabase.from('eve_confluence_trade_ideas').update({
-      ...updates,
-      status: 'invalidated_before_entry',
-      outcome: 'invalidated_before_entry',
-      completed_at: now,
-      result_r: 0,
-      latest_note: 'Invalidation hit before confirmation. Not counted as an active trade loss.'
-    }).eq('id', idea.id);
-    await supabase.from('eve_confluence_current_focus').upsert({ id: 'current', status: 'no_trade', symbol: null, direction: null, idea_id: null, railway_symbol: null, railway_status: 'no_focus', reason: 'Idea invalidated before entry confirmation.', last_live_price: null, last_live_at: null, updated_at: now });
-    await logEvent('idea_invalidated_before_entry', idea.symbol, idea.id, 'SL/invalidation was reached before entry confirmation.', { price });
+    await closeBeforeEntry(idea, price, now, 'invalidated_before_entry', 'SL/invalidation was reached before price touched and confirmed.');
     return;
   }
 
-  let touched = Boolean(idea.touched_zone);
-  if (direction === 'buy') {
-    const demandHigh = Number(idea.demand_high);
-    if (!touched && price <= demandHigh) touched = true;
-    if (touched && price > demandHigh) {
-      await activateIdea(idea, price, now, 'Market buy idea active after live reclaim from demand.');
-      return;
-    }
-  } else {
-    const supplyLow = Number(idea.supply_low);
-    if (!touched && price >= supplyLow) touched = true;
-    if (touched && price < supplyLow) {
-      await activateIdea(idea, price, now, 'Market sell idea active after live rejection from supply.');
-      return;
-    }
+  const touched = direction === 'buy'
+    ? price <= Number(idea.demand_high)
+    : price >= Number(idea.supply_low);
+
+  if (!touched) {
+    await supabase.from('eve_confluence_trade_ideas').update(updates).eq('id', idea.id);
+    return;
   }
 
-  if (touched !== idea.touched_zone) {
-    updates.touched_zone = true;
-    updates.touched_zone_at = now;
-    updates.latest_note = 'Zone touched. Waiting for live confirmation/reclaim.';
+  const armedConfirmationMinutes = await getSetting('armed_confirmation_minutes', 30);
+  const expiry = addMinutesIso(now, armedConfirmationMinutes);
+  const armedPayload = {
+    ...updates,
+    status: 'armed',
+    touched_zone: true,
+    touched_zone_at: idea.touched_zone_at || now,
+    armed_at: idea.armed_at || now,
+    confirm_started_at: null,
+    expires_at: expiry,
+    lock_until: expiry,
+    latest_note: 'Zone touched. Idea is ARMED and waiting for live confirmation. No entry yet.'
+  };
+  await supabase.from('eve_confluence_trade_ideas').update(armedPayload).eq('id', idea.id);
+  await supabase.from('eve_confluence_current_focus').upsert({
+    id: 'current',
+    symbol: idea.symbol,
+    direction: idea.direction,
+    status: 'armed',
+    idea_id: idea.id,
+    reason: 'Zone touched. Waiting for live confirmation. No market entry yet.',
+    lock_until: expiry,
+    last_live_price: price,
+    last_live_at: now,
+    railway_status: 'idea_armed',
+    railway_symbol: idea.symbol,
+    updated_at: now
+  });
+  await logEvent('idea_armed', idea.symbol, idea.id, 'Zone touched. Idea armed and waiting for confirmation.', { price });
+}
+
+async function processArmedIdea(idea, price, now) {
+  const updates = { last_live_price: price, last_live_at: now, updated_at: now };
+  const direction = idea.direction;
+  const invalidated = direction === 'buy' ? price <= Number(idea.stop_loss) : price >= Number(idea.stop_loss);
+  if (invalidated) {
+    await closeBeforeEntry(idea, price, now, 'invalidated_before_entry', 'SL/invalidation was reached after zone touch but before confirmation.');
+    return;
   }
-  await supabase.from('eve_confluence_trade_ideas').update(updates).eq('id', idea.id);
+
+  const confirmedZoneReclaim = direction === 'buy'
+    ? price > Number(idea.demand_high)
+    : price < Number(idea.supply_low);
+
+  if (!confirmedZoneReclaim) {
+    if (idea.confirm_started_at) updates.confirm_started_at = null;
+    updates.latest_note = 'Armed. Waiting for live reclaim/rejection confirmation. No entry yet.';
+    await supabase.from('eve_confluence_trade_ideas').update(updates).eq('id', idea.id);
+    return;
+  }
+
+  const holdSeconds = await getSetting('confirmation_hold_seconds', 30);
+  const startedAt = idea.confirm_started_at ? new Date(idea.confirm_started_at).getTime() : 0;
+  const nowMs = new Date(now).getTime();
+  if (!startedAt) {
+    await supabase.from('eve_confluence_trade_ideas').update({
+      ...updates,
+      confirm_started_at: now,
+      latest_note: `Live confirmation seen. Holding for ${holdSeconds} seconds before market activation.`
+    }).eq('id', idea.id);
+    await logEvent('confirmation_hold_started', idea.symbol, idea.id, 'Live confirmation seen. Holding before activation.', { price, holdSeconds });
+    return;
+  }
+
+  if (nowMs - startedAt < holdSeconds * 1000) {
+    await supabase.from('eve_confluence_trade_ideas').update({
+      ...updates,
+      latest_note: `Live confirmation holding. Waiting ${holdSeconds} seconds before market activation.`
+    }).eq('id', idea.id);
+    return;
+  }
+
+  await activateIdea(idea, price, now, direction === 'buy'
+    ? 'Market buy idea active after live reclaim from demand.'
+    : 'Market sell idea active after live rejection from supply.');
+}
+
+async function closeBeforeEntry(idea, price, now, status, note) {
+  await supabase.from('eve_confluence_trade_ideas').update({
+    status,
+    outcome: status,
+    completed_at: now,
+    result_r: 0,
+    last_live_price: price,
+    last_live_at: now,
+    latest_note: note,
+    updated_at: now
+  }).eq('id', idea.id);
+  await supabase.from('eve_confluence_current_focus').upsert({
+    id: 'current',
+    status: 'no_trade',
+    symbol: null,
+    direction: null,
+    idea_id: null,
+    railway_symbol: null,
+    railway_status: 'no_focus',
+    reason: 'Idea invalidated before entry confirmation.',
+    last_live_price: null,
+    last_live_at: null,
+    updated_at: now
+  });
+  await logEvent(status, idea.symbol, idea.id, note, { price });
 }
 
 async function activateIdea(idea, entryPrice, now, note) {
@@ -445,7 +538,7 @@ function desiredSymbolFromFocus(focus) {
   if (!focus || !focus.symbol) return null;
   const status = String(focus.status || '').toLowerCase();
   // Only stream a real focus idea. Closed/no-trade focus must disconnect.
-  if (!['forming', 'active'].includes(status)) return null;
+  if (!['forming', 'armed', 'active'].includes(status)) return null;
   return focus.symbol;
 }
 

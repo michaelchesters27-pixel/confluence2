@@ -102,3 +102,33 @@ This patch prevents Railway or the dashboard from displaying a stale/cross-symbo
 - Railway disconnects when focus is no_trade/closed and only streams forming/active ideas.
 - Active confirmed trade ideas stay locked until TP or SL.
 - Stats table displays No entry instead of 0.00000 for untriggered ideas.
+
+## v5 state-machine upgrade
+
+v5 changes the trade management logic from a simple forming/active flow into a strict state machine:
+
+```text
+FORMING = EVE has found the best asset, SL/TP/R:R are mapped, waiting for price to touch the correct zone.
+ARMED = price has touched the correct zone, waiting for live reclaim/rejection confirmation.
+ACTIVE = confirmation happened, entry/SL/TP/R:R are locked, follow until TP or SL.
+```
+
+Timer rules:
+
+```text
+forming_touch_minutes = 15
+armed_confirmation_minutes = 30
+confirmation_hold_seconds = 30
+same_symbol_direction_cooldown_minutes = 10
+```
+
+WebSocket rules:
+
+```text
+forming = Railway WebSocket ON
+armed = Railway WebSocket ON
+active = Railway WebSocket ON
+closed/no_trade = Railway WebSocket OFF
+```
+
+Active trade ideas still cannot switch assets until TP or SL.

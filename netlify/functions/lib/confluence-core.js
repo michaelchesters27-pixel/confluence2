@@ -23,7 +23,7 @@ function lower(value) { return String(value || '').toLowerCase(); }
 function isBullish(value) { const v = lower(value); return v.includes('bull') || v === 'buy'; }
 function isBearish(value) { const v = lower(value); return v.includes('bear') || v === 'sell'; }
 function isClosedStatus(status) { return ['won', 'lost', 'no_trigger', 'invalidated_before_entry', 'expired', 'cancelled'].includes(status); }
-function isOpenIdeaStatus(status) { return ['watch_only', 'forming', 'active'].includes(status); }
+function isOpenIdeaStatus(status) { return ['watch_only', 'forming', 'armed', 'active'].includes(status); }
 
 function marketClosed(symbol, assetClass) {
   if (assetClass === 'crypto') return false;
@@ -296,29 +296,43 @@ async function getIdea(supabase, ideaId) {
 
 function shouldKeepCurrentFocus(current, currentIdea, candidateMap, bestCandidate, now) {
   if (!current || !current.symbol) return false;
+
+  // Active/armed/forming ideas are managed as a state machine.
+  // A scan must not jump to another asset while an open idea is waiting
+  // for touch, confirmation, TP, or SL.
   if (currentIdea && currentIdea.status === 'active') return true;
+  if (currentIdea && ['forming', 'armed'].includes(currentIdea.status)) {
+    const expiry = currentIdea.expires_at ? new Date(currentIdea.expires_at).getTime() : 0;
+    return !expiry || expiry > now.getTime();
+  }
   if (currentIdea && isClosedStatus(currentIdea.status)) return false;
+
   const currentCandidate = candidateMap[current.symbol];
   if (!currentCandidate || currentCandidate.status === 'no_trade') return false;
   const lockUntil = current.lock_until ? new Date(current.lock_until).getTime() : 0;
   const locked = lockUntil > now.getTime();
-  if (!locked) return false;
-  if (!bestCandidate || bestCandidate.symbol === current.symbol) return true;
-  const gap = Number(bestCandidate.confluence_score || 0) - Number(currentCandidate.confluence_score || 0);
-  return !(bestCandidate.status === 'forming' && bestCandidate.confluence_score >= 85 && gap >= 25);
+
+  // No early override. If focus is locked, it stays locked until the
+  // timer expires, the idea invalidates/expires, or the user unlocks it.
+  return locked;
 }
 
-async function createOrUpdateIdea(supabase, selected, currentFocus, currentIdea, now, lockUntil, expiryMinutes) {
+async function createOrUpdateIdea(supabase, selected, currentFocus, currentIdea, now, formingTouchMinutes, armedConfirmationMinutes) {
   if (!selected || !['forming'].includes(selected.status)) return null;
+
+  const alreadyInsideZone = String(selected.zone_state || '').includes('inside');
+  const status = alreadyInsideZone ? 'armed' : 'forming';
+  const expiryMinutes = alreadyInsideZone ? armedConfirmationMinutes : formingTouchMinutes;
+  const expiresAt = addMinutes(now, expiryMinutes);
 
   const payload = {
     symbol: selected.symbol,
     direction: selected.direction,
-    status: 'forming',
+    status,
     execution_type: 'market_after_confirmation',
-    lock_until: lockUntil,
+    lock_until: expiresAt,
     formed_at: currentIdea?.formed_at || now.toISOString(),
-    expires_at: currentIdea?.expires_at || addMinutes(now, expiryMinutes),
+    expires_at: expiresAt,
     forming_price: selected.latest_price,
     stop_loss: selected.stop_loss,
     take_profit: selected.target_price,
@@ -331,10 +345,16 @@ async function createOrUpdateIdea(supabase, selected, currentFocus, currentIdea,
     supply_high: selected.supply_high,
     target_source: selected.target_source,
     sl_reason: selected.sl_reason,
-    touched_zone: currentIdea?.touched_zone || String(selected.zone_state || '').includes('inside'),
-    touched_zone_at: currentIdea?.touched_zone_at || (String(selected.zone_state || '').includes('inside') ? now.toISOString() : null),
-    reason: selected.reason,
-    latest_note: 'SL was calculated before this trade idea was allowed.',
+    touched_zone: alreadyInsideZone,
+    touched_zone_at: alreadyInsideZone ? now.toISOString() : null,
+    armed_at: alreadyInsideZone ? now.toISOString() : null,
+    confirm_started_at: null,
+    reason: status === 'armed'
+      ? `${selected.direction.toUpperCase()} idea armed — price is already inside the correct zone. Waiting for live confirmation.`
+      : selected.reason,
+    latest_note: status === 'armed'
+      ? 'Zone already touched at formation. Waiting for live reclaim/rejection confirmation. No entry yet.'
+      : 'SL was calculated before this trade idea was allowed. Waiting for price to touch the correct zone.',
     raw: selected.raw || {},
     updated_at: now.toISOString()
   };
@@ -348,7 +368,14 @@ async function createOrUpdateIdea(supabase, selected, currentFocus, currentIdea,
 
   const { data, error } = await supabase.from('eve_confluence_trade_ideas').insert({ ...payload, focus_started_at: now.toISOString() }).select('*').single();
   if (error) throw error;
-  await supabase.from('eve_confluence_events').insert({ event_type: 'idea_formed', symbol: selected.symbol, idea_id: data.id, message: `${selected.direction.toUpperCase()} idea formed. SL first: ${selected.stop_loss}. TP: ${selected.target_price}. RR: ${selected.rr.toFixed(2)}.` });
+  await supabase.from('eve_confluence_events').insert({
+    event_type: status === 'armed' ? 'idea_armed' : 'idea_formed',
+    symbol: selected.symbol,
+    idea_id: data.id,
+    message: status === 'armed'
+      ? `${selected.direction.toUpperCase()} idea armed immediately. Zone touched. Waiting confirmation. SL: ${selected.stop_loss}. TP: ${selected.target_price}. RR: ${selected.rr.toFixed(2)}.`
+      : `${selected.direction.toUpperCase()} idea formed. SL first: ${selected.stop_loss}. TP: ${selected.target_price}. RR: ${selected.rr.toFixed(2)}.`
+  });
   return data;
 }
 
@@ -356,13 +383,30 @@ async function expireOldIdeas(supabase, now) {
   const { data: ideas } = await supabase
     .from('eve_confluence_trade_ideas')
     .select('*')
-    .in('status', ['forming', 'watch_only'])
+    .in('status', ['forming', 'armed', 'watch_only'])
     .lt('expires_at', now.toISOString());
   for (const idea of ideas || []) {
+    const expiredBeforeTouch = idea.status === 'forming' && !idea.touched_zone;
+    const note = expiredBeforeTouch
+      ? 'Idea expired before price touched the correct zone.'
+      : 'Idea expired after zone touch but before live confirmation.';
     await supabase.from('eve_confluence_trade_ideas').update({
-      status: 'expired', outcome: 'expired', completed_at: now.toISOString(), updated_at: now.toISOString(), latest_note: 'Idea expired before confirmation.'
+      status: 'expired', outcome: 'expired', completed_at: now.toISOString(), updated_at: now.toISOString(), latest_note: note
     }).eq('id', idea.id);
-    await supabase.from('eve_confluence_events').insert({ event_type: 'idea_expired', symbol: idea.symbol, idea_id: idea.id, message: 'Idea expired before live confirmation.' });
+    await supabase.from('eve_confluence_current_focus').upsert({
+      id: 'current',
+      symbol: null,
+      direction: null,
+      status: 'no_trade',
+      idea_id: null,
+      reason: note,
+      railway_symbol: null,
+      railway_status: 'no_focus',
+      last_live_price: null,
+      last_live_at: null,
+      updated_at: now.toISOString()
+    });
+    await supabase.from('eve_confluence_events').insert({ event_type: 'idea_expired', symbol: idea.symbol, idea_id: idea.id, message: note });
   }
 }
 
@@ -404,12 +448,26 @@ async function scoreActiveIdeas(supabase, now) {
   }
 }
 
+
+async function recentCooldownBlocks(supabase, now, cooldownMinutes) {
+  if (!cooldownMinutes || cooldownMinutes <= 0) return new Set();
+  const since = addMinutes(now, -cooldownMinutes);
+  const { data } = await supabase
+    .from('eve_confluence_trade_ideas')
+    .select('symbol,direction,status,completed_at,updated_at')
+    .in('status', ['expired', 'no_trigger', 'invalidated_before_entry'])
+    .gte('completed_at', since);
+  return new Set((data || []).map((i) => `${i.symbol}|${i.direction}`));
+}
+
 async function runConfluenceScan(supabase, source = 'scheduled') {
   const now = new Date();
   const scannerEnabled = await getSetting(supabase, 'scanner_enabled', true);
   const minRr = await getSetting(supabase, 'minimum_rr', 2);
   const focusLockMinutes = await getSetting(supabase, 'focus_lock_minutes', 15);
-  const expiryMinutes = await getSetting(supabase, 'idea_expiry_minutes', 45);
+  const formingTouchMinutes = await getSetting(supabase, 'forming_touch_minutes', 15);
+  const armedConfirmationMinutes = await getSetting(supabase, 'armed_confirmation_minutes', 30);
+  const cooldownMinutes = await getSetting(supabase, 'same_symbol_direction_cooldown_minutes', 10);
 
   const { data: run, error: runError } = await supabase.from('eve_confluence_scan_runs').insert({
     started_at: now.toISOString(),
@@ -491,7 +549,9 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   if (scoreRows.length) await supabase.from('eve_confluence_asset_scores').insert(scoreRows);
 
   const candidateMap = Object.fromEntries(assets.map((a) => [a.symbol, a]));
+  const cooldownBlocks = await recentCooldownBlocks(supabase, now, cooldownMinutes);
   const ranked = assets
+    .filter((a) => !cooldownBlocks.has(`${a.symbol}|${a.direction}`))
     .filter((a) => ['forming', 'watch_only'].includes(a.status) && Number(a.confluence_score) >= MIN_SCORE_FOR_FOCUS)
     .sort((a, b) => {
       if (a.status !== b.status) return a.status === 'forming' ? -1 : 1;
@@ -538,6 +598,44 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
     return { run: { ...run, completed_at: completedAt }, selected: candidateMap[currentIdea.symbol] || null, idea: currentIdea, assets, inputs };
   }
 
+  if (currentIdea && ['forming', 'armed'].includes(currentIdea.status) && !isClosedStatus(currentIdea.status)) {
+    const selectedStatus = currentIdea.status;
+    const note = selectedStatus === 'armed'
+      ? 'Armed idea remains locked. Zone has touched; waiting for live confirmation.'
+      : 'Forming idea remains locked. Waiting for price to touch the correct zone.';
+    await supabase.from('eve_confluence_current_focus').upsert({
+      id: 'current',
+      symbol: currentIdea.symbol,
+      direction: currentIdea.direction,
+      status: selectedStatus,
+      idea_id: currentIdea.id,
+      confluence_score: current?.confluence_score || 0,
+      reason: currentIdea.latest_note || currentIdea.reason || note,
+      locked_at: current?.locked_at || currentIdea.focus_started_at || currentIdea.formed_at || now.toISOString(),
+      lock_until: currentIdea.expires_at || currentIdea.lock_until || current?.lock_until,
+      last_scan_id: run.id,
+      last_scan_at: now.toISOString(),
+      railway_symbol: currentIdea.symbol,
+      railway_status: selectedStatus === 'armed' ? 'idea_armed' : 'focus_selected',
+      last_live_price: currentIdea.last_live_price || current?.last_live_price || null,
+      last_live_at: currentIdea.last_live_at || current?.last_live_at || null,
+      raw: current?.raw || candidateMap[currentIdea.symbol] || {},
+      updated_at: now.toISOString()
+    });
+    const completedAt = nowIso();
+    await supabase.from('eve_confluence_scan_runs').update({
+      completed_at: completedAt,
+      mode: selectedStatus === 'armed' ? 'armed_idea_locked' : 'forming_idea_locked',
+      assets_checked: assets.length,
+      assets_scored: ranked.length,
+      selected_symbol: currentIdea.symbol,
+      selected_direction: currentIdea.direction,
+      selected_status: selectedStatus,
+      notes: note
+    }).eq('id', run.id);
+    return { run: { ...run, completed_at: completedAt }, selected: candidateMap[currentIdea.symbol] || null, idea: currentIdea, assets, inputs };
+  }
+
   if (shouldKeepCurrentFocus(current, currentIdea, candidateMap, selected, now)) {
     selected = candidateMap[current.symbol] || selected;
   }
@@ -547,21 +645,23 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   const lockUntil = selected ? (newFocus ? addMinutes(now, focusLockMinutes) : current.lock_until) : null;
 
   if (selected) {
-    idea = await createOrUpdateIdea(supabase, selected, current, currentIdea, now, lockUntil, expiryMinutes);
+    idea = await createOrUpdateIdea(supabase, selected, current, currentIdea, now, formingTouchMinutes, armedConfirmationMinutes);
+    const focusStatus = idea?.status || selected.status;
+    const focusLockUntil = idea?.expires_at || idea?.lock_until || lockUntil;
     await supabase.from('eve_confluence_current_focus').upsert({
       id: 'current',
       symbol: selected.symbol,
       direction: selected.direction,
-      status: selected.status,
+      status: focusStatus,
       idea_id: idea?.id || null,
       confluence_score: selected.confluence_score,
-      reason: selected.reason,
+      reason: idea?.latest_note || idea?.reason || selected.reason,
       locked_at: newFocus ? now.toISOString() : (current?.locked_at || now.toISOString()),
-      lock_until: lockUntil,
+      lock_until: focusLockUntil,
       last_scan_id: run.id,
       last_scan_at: now.toISOString(),
       railway_symbol: selected.symbol,
-      railway_status: 'focus_selected',
+      railway_status: focusStatus === 'armed' ? 'idea_armed' : 'focus_selected',
       last_live_price: newFocus ? null : current?.last_live_price,
       last_live_at: newFocus ? null : current?.last_live_at,
       raw: selected,
@@ -645,10 +745,15 @@ function nextFiveMinuteSlot(offsetMinute = 4) {
 function performanceStats(ideas) {
   const all = ideas || [];
   const formed = all.filter((i) => i.status !== 'watch_only');
+  const armed = all.filter((i) => ['armed', 'active', 'won', 'lost'].includes(i.status) || i.touched_zone);
   const triggered = all.filter((i) => ['active', 'won', 'lost'].includes(i.status));
   const wins = all.filter((i) => i.status === 'won').length;
   const losses = all.filter((i) => i.status === 'lost').length;
-  const noTrigger = all.filter((i) => ['no_trigger', 'invalidated_before_entry', 'expired'].includes(i.status)).length;
+  const expiredBeforeTouch = all.filter((i) => i.status === 'expired' && !i.touched_zone).length;
+  const expiredAfterTouch = all.filter((i) => i.status === 'expired' && i.touched_zone).length;
+  const invalidatedBeforeEntry = all.filter((i) => i.status === 'invalidated_before_entry').length;
+  const rrFailed = all.filter((i) => i.status === 'no_trigger').length;
+  const noTrigger = expiredBeforeTouch + expiredAfterTouch + invalidatedBeforeEntry + rrFailed;
   const closedCount = wins + losses;
   const winRate = closedCount ? (wins / closedCount) * 100 : 0;
   const triggerRate = formed.length ? (triggered.length / formed.length) * 100 : 0;
@@ -671,7 +776,7 @@ function performanceStats(ideas) {
   }
   const assetRows = Object.values(byAsset).sort((a, b) => b.winRate - a.winRate || b.total - a.total);
 
-  return { totalIdeas: formed.length, triggeredIdeas: triggered.length, wins, losses, noTrigger, active: all.filter((i) => i.status === 'active').length, winRate, triggerRate, avgR, byAsset: assetRows };
+  return { totalIdeas: formed.length, armedIdeas: armed.length, triggeredIdeas: triggered.length, wins, losses, noTrigger, expiredBeforeTouch, expiredAfterTouch, invalidatedBeforeEntry, rrFailed, active: all.filter((i) => i.status === 'active').length, winRate, triggerRate, avgR, byAsset: assetRows };
 }
 
 module.exports = {

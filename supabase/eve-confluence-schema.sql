@@ -72,6 +72,7 @@ create table if not exists public.eve_confluence_trade_ideas (
   status text not null check (status in (
     'watch_only',
     'forming',
+    'armed',
     'active',
     'won',
     'lost',
@@ -86,6 +87,8 @@ create table if not exists public.eve_confluence_trade_ideas (
   lock_until timestamptz,
   formed_at timestamptz,
   activated_at timestamptz,
+  armed_at timestamptz,
+  confirm_started_at timestamptz,
   completed_at timestamptz,
   expires_at timestamptz,
 
@@ -162,6 +165,29 @@ create table if not exists public.eve_confluence_events (
 alter table public.eve_confluence_asset_scores
   add column if not exists rank int;
 
+
+-- v5 state-machine safe patches for existing installs.
+alter table public.eve_confluence_trade_ideas
+  drop constraint if exists eve_confluence_trade_ideas_status_check;
+
+alter table public.eve_confluence_trade_ideas
+  add constraint eve_confluence_trade_ideas_status_check check (status in (
+    'watch_only',
+    'forming',
+    'armed',
+    'active',
+    'won',
+    'lost',
+    'no_trigger',
+    'invalidated_before_entry',
+    'expired',
+    'cancelled'
+  ));
+
+alter table public.eve_confluence_trade_ideas
+  add column if not exists armed_at timestamptz,
+  add column if not exists confirm_started_at timestamptz;
+
 create index if not exists eve_confluence_runs_started_idx
   on public.eve_confluence_scan_runs(started_at desc);
 
@@ -185,7 +211,11 @@ values
   ('scanner_enabled', 'true'::jsonb, now(), 'setup'),
   ('minimum_rr', '2'::jsonb, now(), 'setup'),
   ('focus_lock_minutes', '15'::jsonb, now(), 'setup'),
-  ('idea_expiry_minutes', '45'::jsonb, now(), 'setup')
+  ('idea_expiry_minutes', '45'::jsonb, now(), 'setup'),
+  ('forming_touch_minutes', '15'::jsonb, now(), 'setup'),
+  ('armed_confirmation_minutes', '30'::jsonb, now(), 'setup'),
+  ('confirmation_hold_seconds', '30'::jsonb, now(), 'setup'),
+  ('same_symbol_direction_cooldown_minutes', '10'::jsonb, now(), 'setup')
 on conflict (key) do update set value = excluded.value, updated_at = now(), changed_by = 'setup';
 
 insert into public.eve_confluence_current_focus (id, status, reason, updated_at)
