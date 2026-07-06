@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[functions."eve-confluence-scan"]
+  schedule = "4-59/5 * * * *"

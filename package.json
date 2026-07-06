@@ -1,0 +1,16 @@
+{
+  "name": "eve-confluence-machine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EVE Confluence - one-asset trade focus engine",
+  "scripts": {
+    "build": "echo 'EVE Confluence static build ready'",
+    "dev": "netlify dev"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.36.4"
+  }
+}

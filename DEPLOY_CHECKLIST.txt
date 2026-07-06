@@ -1,0 +1,94 @@
+EVE CONFLUENCE DEPLOY CHECKLIST
+
+PART 1 - SUPABASE
+
+1. Open the same Supabase project used by EVE Bias, Zones, Structure and Liquidity.
+
+2. Go to SQL Editor.
+
+3. Open:
+   supabase/eve-confluence-schema.sql
+
+4. Copy all SQL.
+
+5. Run it.
+
+This creates separate Confluence tables. It does not delete or change your other EVE tables.
+
+
+PART 2 - NETLIFY
+
+1. Create a new Netlify site from the GitHub repo.
+
+2. Build settings:
+
+Base directory:
+Leave blank / Not set
+
+Build command:
+npm run build
+
+Publish directory:
+public
+
+Functions directory:
+netlify/functions
+
+3. Add these Netlify environment variables:
+
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+EVE_ADMIN_PASSWORD
+RAILWAY_PUBLIC_URL
+
+RAILWAY_PUBLIC_URL can be added after Railway is deployed.
+
+4. Deploy Netlify.
+
+5. Open the EVE Confluence site.
+
+6. Press Set / Change Admin Password and enter your EVE_ADMIN_PASSWORD.
+
+7. Press Scan Now after the other EVE scanners have recent results.
+
+
+PART 3 - RAILWAY
+
+1. Create a new Railway project.
+
+2. Deploy from the same GitHub repo.
+
+3. Railway root directory:
+railway
+
+4. Start command:
+npm start
+
+5. Add these Railway variables:
+
+TWELVEDATA_API_KEY
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+
+6. Deploy.
+
+7. Open Railway logs.
+
+You should see:
+EVE Confluence Railway hub listening on ...
+
+When Confluence picks an asset, Railway subscribes only to that one asset.
+
+
+PART 4 - TEST ORDER
+
+1. Make sure Bias has scanned.
+2. Make sure Zones has scanned.
+3. Make sure Structure has scanned.
+4. Make sure Liquidity has scanned.
+5. Open EVE Confluence.
+6. Press Scan Now.
+7. Check if one focus asset appears.
+8. Deploy Railway.
+9. Watch live price update.
+10. Press Idea Stats after ideas start forming/closing.

@@ -1,0 +1,15 @@
+EVE CONFLUENCE - GITHUB UPLOAD STEPS
+
+1. Unzip this folder on your laptop.
+
+2. Go to GitHub.
+
+3. Create a new repository.
+   Suggested name:
+   eve-confluence-machine
+
+4. Upload ALL files from this folder into the GitHub repo.
+
+5. Commit the files.
+
+Do not put any API keys into GitHub.

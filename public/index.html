@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EVE Confluence - One Asset Trade Focus Engine</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="noise"></div>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">One-Asset Trade Focus Engine</div>
+        <h1>EVE</h1>
+        <p class="subline">Bias + Structure + Zones + Liquidity + SL first + minimum 1:2 R:R</p>
+      </div>
+      <div class="status-panel">
+        <div class="status-row"><span>Confluence</span><strong id="scannerState">Loading</strong></div>
+        <div class="status-row"><span>Railway WS</span><strong id="railwayState">Waiting</strong></div>
+        <div class="status-row"><span>UK Time</span><strong id="ukClock">--:--</strong></div>
+        <div class="status-row"><span>Next Scan</span><strong id="nextScan">--:--</strong></div>
+      </div>
+    </header>
+
+    <section class="hero-grid">
+      <div class="eve-core-card">
+        <div class="core-orbit">
+          <div class="ring ring-1"></div>
+          <div class="ring ring-2"></div>
+          <div class="ring ring-3"></div>
+          <div class="scan-line"></div>
+          <div class="core-dot"><span>EVE</span><small id="coreStatus">FOCUS</small></div>
+        </div>
+        <div class="core-copy">
+          <p id="lastScan">Last scan: waiting</p>
+          <p id="lockInfo">Focus lock: waiting</p>
+        </div>
+      </div>
+
+      <div class="focus-card" id="focusCard">
+        <div class="card-head">
+          <span>EVE'S LIVE FOCUS</span>
+          <button id="refreshBtn" class="ghost-btn">Refresh</button>
+        </div>
+        <div id="focusEmpty" class="empty-state">Waiting for EVE Confluence...</div>
+        <div id="focusContent" class="hidden">
+          <div class="focus-row">
+            <div>
+              <div class="top-symbol" id="focusSymbol">--</div>
+              <div class="bias-pill bias-mixed" id="focusDirection">--</div>
+            </div>
+            <div class="score-wrap vertical-score">
+              <div class="score-number"><span id="focusScore">0</span><small>%</small></div>
+              <div class="score-label">Confluence</div>
+            </div>
+          </div>
+          <p class="reason" id="focusReason">--</p>
+          <div class="live-price-box">
+            <span>Live price</span>
+            <strong id="livePrice">--</strong>
+            <small id="livePriceAt">Waiting for Railway</small>
+          </div>
+        </div>
+      </div>
+
+      <aside class="controls-card">
+        <div class="card-head"><span>Admin Control</span></div>
+        <button id="toggleBtn" class="control-btn">Turn Confluence Off</button>
+        <button id="manualScanBtn" class="control-btn secondary">Scan Now</button>
+        <button id="unlockBtn" class="control-btn secondary">Unlock Focus</button>
+        <button id="statsBtn" class="control-btn stats">Idea Stats</button>
+        <button id="passwordBtn" class="text-btn">Set / Change Admin Password</button>
+      </aside>
+    </section>
+
+    <section class="trade-plan-grid">
+      <article class="plan-card sl-first" id="slCard">
+        <span>SL FIRST</span>
+        <strong id="planSL">--</strong>
+        <small id="planSLReason">No SL = no trade idea</small>
+      </article>
+      <article class="plan-card" id="entryCard">
+        <span>Entry</span>
+        <strong id="planEntry">--</strong>
+        <small id="planEntryReason">Only after confirmation</small>
+      </article>
+      <article class="plan-card" id="tpCard">
+        <span>TP / Liquidity Target</span>
+        <strong id="planTP">--</strong>
+        <small id="planTargetSource">Waiting</small>
+      </article>
+      <article class="plan-card" id="rrCard">
+        <span>Risk : Reward</span>
+        <strong id="planRR">--</strong>
+        <small>Minimum required 1:2</small>
+      </article>
+    </section>
+
+    <section class="idea-card" id="ideaCard">
+      <div class="section-title compact">
+        <h2>Trade Idea</h2>
+        <span id="ideaStatus" class="status-chip">Waiting</span>
+      </div>
+      <div class="idea-body" id="ideaBody">
+        EVE will only give a trade idea after the stop loss is clean, the target is meaningful, and the R:R is at least 1:2.
+      </div>
+    </section>
+
+    <section class="market-stage">
+      <div class="section-title">
+        <h2>Confluence Board</h2>
+      </div>
+      <div class="market-grid" id="marketGrid"></div>
+    </section>
+  </main>
+
+  <div id="statsModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="section-title compact">
+        <h2>Trade Idea Performance</h2>
+        <button id="closeStatsBtn" class="ghost-btn">Close</button>
+      </div>
+      <div class="stats-grid" id="statsGrid"></div>
+      <div class="table-wrap stats-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th><th>Asset</th><th>Dir</th><th>Status</th><th>Entry</th><th>SL</th><th>TP</th><th>R</th>
+            </tr>
+          </thead>
+          <tbody id="ideaHistoryBody"><tr><td colspan="8">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
