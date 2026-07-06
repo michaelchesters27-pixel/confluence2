@@ -2,7 +2,6 @@ const MIN_SCORE_FOR_FOCUS = 50;
 
 const MARKETS = [
   { symbol: 'XAU/USD', display_name: 'Gold', asset_class: 'metal' },
-  { symbol: 'XAG/USD', display_name: 'Silver', asset_class: 'metal' },
   { symbol: 'EUR/USD', display_name: 'Euro / Dollar', asset_class: 'forex' },
   { symbol: 'GBP/USD', display_name: 'Pound / Dollar', asset_class: 'forex' },
   { symbol: 'USD/JPY', display_name: 'Dollar / Yen', asset_class: 'forex' },
@@ -10,9 +9,7 @@ const MARKETS = [
   { symbol: 'USD/CAD', display_name: 'Dollar / Cad', asset_class: 'forex' },
   { symbol: 'EUR/JPY', display_name: 'Euro / Yen', asset_class: 'forex' },
   { symbol: 'GBP/JPY', display_name: 'Pound / Yen', asset_class: 'forex' },
-  { symbol: 'BTC/USD', display_name: 'Bitcoin', asset_class: 'crypto' },
-  { symbol: 'ETH/USD', display_name: 'Ethereum', asset_class: 'crypto' },
-  { symbol: 'SOL/USD', display_name: 'Solana', asset_class: 'crypto' }
+  { symbol: 'BTC/USD', display_name: 'Bitcoin', asset_class: 'crypto' }
 ];
 
 function nowIso() { return new Date().toISOString(); }

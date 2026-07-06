@@ -228,6 +228,16 @@ function renderGrid(assets) {
   }).join('');
 }
 
+function openAdmin() {
+  $('adminModal').classList.remove('hidden');
+  $('adminFab').setAttribute('aria-expanded', 'true');
+}
+
+function closeAdmin() {
+  $('adminModal').classList.add('hidden');
+  $('adminFab').setAttribute('aria-expanded', 'false');
+}
+
 async function openStats() {
   try {
     const data = await api('/.netlify/functions/performance?limit=250');
@@ -308,6 +318,9 @@ function setPassword() {
 
 function init() {
   $('refreshBtn').addEventListener('click', loadLatest);
+  $('adminFab').addEventListener('click', openAdmin);
+  $('closeAdminBtn').addEventListener('click', closeAdmin);
+  $('adminModal').addEventListener('click', (event) => { if (event.target === $('adminModal')) closeAdmin(); });
   $('manualScanBtn').addEventListener('click', manualScan);
   $('toggleBtn').addEventListener('click', toggleScanner);
   $('unlockBtn').addEventListener('click', unlockFocus);

@@ -139,3 +139,9 @@ V6 9-ASSET PATCH
 - XAG/USD, ETH/USD and SOL/USD removed from new Confluence selection.
 - v5 forming/armed/active state-machine logic remains in place.
 - Run supabase/v6-9assets-confluence-patch.sql once after deploy.
+
+
+## v7 admin button update
+- Main page admin controls are hidden behind a small fixed Admin button.
+- Admin panel contains Idea Stats, Scan Now, Unlock Focus, Turn Confluence On/Off, and Set/Change Admin Password.
+- Confluence asset list is hard-filtered to 9 assets: EUR/USD, GBP/USD, AUD/USD, USD/JPY, USD/CAD, EUR/JPY, GBP/JPY, XAU/USD, BTC/USD.

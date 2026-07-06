@@ -64,14 +64,6 @@
         </div>
       </div>
 
-      <aside class="controls-card">
-        <div class="card-head"><span>Admin Control</span></div>
-        <button id="toggleBtn" class="control-btn">Turn Confluence Off</button>
-        <button id="manualScanBtn" class="control-btn secondary">Scan Now</button>
-        <button id="unlockBtn" class="control-btn secondary">Unlock Focus</button>
-        <button id="statsBtn" class="control-btn stats">Idea Stats</button>
-        <button id="passwordBtn" class="text-btn">Set / Change Admin Password</button>
-      </aside>
     </section>
 
     <section class="trade-plan-grid">
@@ -114,6 +106,24 @@
       <div class="market-grid" id="marketGrid"></div>
     </section>
   </main>
+
+
+  <button id="adminFab" class="admin-fab" aria-controls="adminModal" aria-expanded="false">Admin</button>
+
+  <div id="adminModal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-label="EVE Admin Control">
+    <div class="admin-panel">
+      <div class="section-title compact">
+        <h2>Admin</h2>
+        <button id="closeAdminBtn" class="ghost-btn">Close</button>
+      </div>
+      <p class="admin-note">Protected controls are kept behind this small admin button.</p>
+      <button id="statsBtn" class="control-btn stats">Idea Stats</button>
+      <button id="manualScanBtn" class="control-btn secondary">Scan Now</button>
+      <button id="unlockBtn" class="control-btn secondary">Unlock Focus</button>
+      <button id="toggleBtn" class="control-btn danger">Turn Confluence Off</button>
+      <button id="passwordBtn" class="text-btn">Set / Change Admin Password</button>
+    </div>
+  </div>
 
   <div id="statsModal" class="modal hidden">
     <div class="modal-card">
