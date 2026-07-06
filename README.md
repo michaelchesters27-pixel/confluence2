@@ -132,3 +132,10 @@ closed/no_trade = Railway WebSocket OFF
 ```
 
 Active trade ideas still cannot switch assets until TP or SL.
+
+
+V6 9-ASSET PATCH
+- Confluence now scores only: EUR/USD, GBP/USD, AUD/USD, USD/JPY, USD/CAD, EUR/JPY, GBP/JPY, XAU/USD, BTC/USD.
+- XAG/USD, ETH/USD and SOL/USD removed from new Confluence selection.
+- v5 forming/armed/active state-machine logic remains in place.
+- Run supabase/v6-9assets-confluence-patch.sql once after deploy.

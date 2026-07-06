@@ -39,28 +39,22 @@ function marketClosed(symbol, assetClass) {
 function priceDecimals(symbol) {
   if (symbol.includes('JPY')) return 3;
   if (symbol === 'XAU/USD') return 2;
-  if (symbol === 'XAG/USD') return 3;
   if (symbol === 'BTC/USD') return 0;
-  if (symbol === 'ETH/USD') return 1;
-  if (symbol === 'SOL/USD') return 2;
   return 5;
 }
 
 function priceBuffer(symbol, price) {
   const p = Math.abs(Number(price) || 1);
   if (symbol === 'XAU/USD') return 1.25;
-  if (symbol === 'XAG/USD') return 0.035;
   if (symbol.includes('JPY')) return 0.035;
   if (symbol === 'BTC/USD') return Math.max(25, p * 0.00055);
-  if (symbol === 'ETH/USD') return Math.max(2, p * 0.00065);
-  if (symbol === 'SOL/USD') return Math.max(0.08, p * 0.00075);
   return 0.00035;
 }
 
 function zoneDistanceAllowance(symbol, price, zoneLow, zoneHigh) {
   const h = Math.abs(Number(zoneHigh) - Number(zoneLow));
   const p = Math.abs(Number(price) || 1);
-  const pct = symbol === 'BTC/USD' || symbol === 'ETH/USD' || symbol === 'SOL/USD' ? p * 0.002 : p * 0.0008;
+  const pct = symbol === 'BTC/USD' ? p * 0.002 : p * 0.0008;
   return Math.max(h * 1.5, pct, priceBuffer(symbol, p) * 2);
 }
 

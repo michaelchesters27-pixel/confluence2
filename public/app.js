@@ -30,10 +30,7 @@ function formatPrice(value, symbol = '') {
   let decimals = 5;
   if (symbol.includes('JPY')) decimals = 3;
   if (symbol === 'XAU/USD') decimals = 2;
-  if (symbol === 'XAG/USD') decimals = 3;
   if (symbol === 'BTC/USD') decimals = 0;
-  if (symbol === 'ETH/USD') decimals = 1;
-  if (symbol === 'SOL/USD') decimals = 2;
   return n.toLocaleString('en-GB', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
