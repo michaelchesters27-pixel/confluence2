@@ -133,3 +133,23 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @media (max-width: 1100px) { .hero-grid, .trade-plan-grid, .market-grid { grid-template-columns: 1fr; } .topbar { flex-direction: column; } .status-panel { min-width: auto; } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 640px) { .focus-row { flex-direction: column; } .stats-grid { grid-template-columns: 1fr; } .mini-plan { grid-template-columns: 1fr; } .admin-modal { padding: 12px 12px 68px; } .admin-panel { width: 100%; } }
+
+.sound-toggle { margin-top: 8px; border: 1px solid rgba(255,255,255,.14); color: var(--muted); background: rgba(255,255,255,.055); border-radius: 999px; padding: 9px 12px; font-size: 11px; letter-spacing: .11em; text-transform: uppercase; font-weight: 950; cursor: pointer; }
+.sound-toggle.sound-on { color: var(--good); border-color: rgba(53,242,162,.38); box-shadow: 0 0 18px rgba(53,242,162,.10); }
+.source-freshness { margin: 18px 0; padding: 18px; border: 1px solid var(--line); background: linear-gradient(145deg, rgba(18, 28, 53, .80), rgba(7, 12, 25, .70)); border-radius: 24px; box-shadow: 0 18px 60px rgba(0, 0, 0, .26), inset 0 1px 0 rgba(255,255,255,.04); }
+.fresh-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.fresh-head span { display: block; color: var(--good); font-size: 11px; text-transform: uppercase; letter-spacing: .18em; font-weight: 950; }
+.fresh-head strong { display: block; margin-top: 5px; color: var(--text); font-size: 19px; letter-spacing: -.03em; }
+.fresh-head small { color: var(--muted); white-space: nowrap; }
+.fresh-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.fresh-card { padding: 14px; border-radius: 18px; border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.045); }
+.fresh-card span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .15em; font-weight: 900; }
+.fresh-card strong { display: block; margin-top: 8px; font-size: 18px; }
+.fresh-card small { display: block; margin-top: 5px; color: var(--muted); }
+.fresh-card.fresh { border-color: rgba(53,242,162,.38); background: rgba(53,242,162,.07); box-shadow: inset 0 0 22px rgba(53,242,162,.05); }
+.fresh-card.fresh strong { color: var(--good); }
+.fresh-card.waiting { border-color: rgba(255,204,102,.22); }
+.fresh-card.waiting strong { color: var(--warn); }
+.market-card.candidate { border-color: rgba(255,204,102,.34); box-shadow: 0 18px 60px rgba(255,204,102,.06); opacity: .94; }
+@media (max-width: 900px) { .fresh-grid { grid-template-columns: repeat(2, 1fr); } .fresh-head { flex-direction: column; align-items: flex-start; } }
+@media (max-width: 520px) { .fresh-grid { grid-template-columns: 1fr; } }

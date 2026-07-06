@@ -1,4 +1,13 @@
 const MIN_SCORE_FOR_FOCUS = 50;
+const MIN_BIAS_QUALITY_FOR_TRADE = 70;
+const SOURCE_FRESHNESS_LAG_MINUTES = 4;
+
+const SOURCE_SCANNERS = [
+  { key: 'bias', label: 'Bias', runTable: 'eve_scan_runs', rowTable: 'eve_market_scores' },
+  { key: 'structure', label: 'Structure', runTable: 'eve_structure_scan_runs', rowTable: 'eve_structure_market_results' },
+  { key: 'zones', label: 'Zones', runTable: 'eve_zones_scan_runs', rowTable: 'eve_zones_market_zones' },
+  { key: 'liquidity', label: 'Liquidity', runTable: 'eve_liquidity_scan_runs', rowTable: 'eve_liquidity_market_results' }
+];
 
 const MARKETS = [
   { symbol: 'XAU/USD', display_name: 'Gold', asset_class: 'metal' },
@@ -133,6 +142,79 @@ async function latestLivePrices(supabase) {
 
 function mapBySymbol(rows) { return Object.fromEntries((rows || []).map((r) => [r.symbol, r])); }
 
+function floorToFiveMinutes(date) {
+  const d = new Date(date.getTime());
+  d.setUTCSeconds(0, 0);
+  d.setUTCMinutes(Math.floor(d.getUTCMinutes() / 5) * 5);
+  return d;
+}
+
+function sourceDecisionCycle(now = new Date()) {
+  // Source scanners run at 00/01/02/03. Confluence should judge that full
+  // completed source cycle from minute 04 until the next cycle is ready.
+  const shifted = new Date(now.getTime() - SOURCE_FRESHNESS_LAG_MINUTES * 60_000);
+  const cycleStart = floorToFiveMinutes(shifted);
+  const cycleEnd = new Date(cycleStart.getTime() + 5 * 60_000);
+  return { start: cycleStart, end: cycleEnd };
+}
+
+function isRealSourceRun(run) {
+  if (!run || !run.completed_at) return false;
+  const mode = lower(run.mode);
+  if (!mode) return true;
+  if (mode.includes('skipped')) return false;
+  if (mode === 'starting' || mode === 'scanning') return false;
+  if (mode.includes('failed') || mode.includes('error')) return false;
+  return true;
+}
+
+async function latestRealRunForCycle(supabase, table, cycle) {
+  const { data, error } = await supabase
+    .from(table)
+    .select('*')
+    .gte('started_at', cycle.start.toISOString())
+    .lt('started_at', cycle.end.toISOString())
+    .order('started_at', { ascending: false })
+    .limit(12);
+  if (error) return null;
+  return (data || []).find(isRealSourceRun) || null;
+}
+
+async function getSourceFreshness(supabase, now = new Date()) {
+  const cycle = sourceDecisionCycle(now);
+  const pairs = await Promise.all(SOURCE_SCANNERS.map(async (scanner) => {
+    const run = await latestRealRunForCycle(supabase, scanner.runTable, cycle);
+    const fresh = Boolean(run);
+    return [scanner.key, {
+      key: scanner.key,
+      label: scanner.label,
+      fresh,
+      status: fresh ? 'fresh' : 'waiting',
+      run_id: run?.id || null,
+      started_at: run?.started_at || null,
+      completed_at: run?.completed_at || null,
+      mode: run?.mode || null,
+      run
+    }];
+  }));
+  const sources = Object.fromEntries(pairs);
+  const allFresh = SOURCE_SCANNERS.every((s) => sources[s.key]?.fresh);
+  const waiting = SOURCE_SCANNERS.filter((s) => !sources[s.key]?.fresh).map((s) => s.label);
+  return {
+    allFresh,
+    waiting,
+    cycle_start: cycle.start.toISOString(),
+    cycle_end: cycle.end.toISOString(),
+    sources
+  };
+}
+
+function sourceFreshnessReason(freshness) {
+  if (freshness?.allFresh) return 'All four backbone scanners are fresh. Confluence decision allowed.';
+  const waiting = freshness?.waiting?.length ? freshness.waiting.join(', ') : 'source scanners';
+  return `Waiting for fresh ${waiting} scan${freshness?.waiting?.length === 1 ? '' : 's'}. No new trade decision yet.`;
+}
+
 function pickPrice(symbol, live, bias, zones, structure, liquidity) {
   const prices = [live?.price, liquidity?.latest_price, zones?.latest_price, structure?.latest_price, bias?.latest_price].map(num).filter((v) => v && v > 0);
   return prices[0] || null;
@@ -169,6 +251,11 @@ function buildCandidate(market, data, minRr) {
   if (!price) return { ...base, reason: 'No live/latest price. No trade.' };
   if (!bias || !structure || !zones || !liquidity) return { ...base, reason: 'Waiting for Bias, Structure, Zones and Liquidity to all report.' };
 
+  const biasScore = num(bias?.score ?? bias?.bias_score) || 0;
+  if (biasScore < MIN_BIAS_QUALITY_FOR_TRADE || lower(bias.bias).includes('watch')) {
+    return { ...base, reason: `No trade — bias is only ${Math.round(biasScore)}%${lower(bias.bias).includes('watch') ? ' / Watch Only' : ''}. Minimum clean bias is ${MIN_BIAS_QUALITY_FOR_TRADE}%. Bias is the gatekeeper.` };
+  }
+
   const bullAligned = isBullish(bias.bias) && isBullish(structure.structure_bias);
   const bearAligned = isBearish(bias.bias) && isBearish(structure.structure_bias);
   if (!bullAligned && !bearAligned) {
@@ -177,28 +264,30 @@ function buildCandidate(market, data, minRr) {
 
   const options = [];
   if (bullAligned) {
-    const stop = computeBuyStop(symbol, price, base.demand_low, num(structure.protected_level));
+    const plannedEntry = num(base.demand_high);
+    const stop = computeBuyStop(symbol, plannedEntry || price, base.demand_low, num(structure.protected_level));
     const target = num(liquidity.demand_target_price);
     const quality = num(zones.demand_quality) || 0;
     const liqQuality = num(liquidity.demand_target_quality) || 0;
     const zoneState = classifyBuyZone(price, base.demand_low, base.demand_high, symbol);
-    const rr = rrFor('buy', price, stop, target);
-    options.push(makeScoredOption({ base, direction: 'buy', zoneState, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.demand_target_type || 'demand_target_liquidity', minRr }));
+    const rr = rrFor('buy', plannedEntry || price, stop, target);
+    options.push(makeScoredOption({ base, direction: 'buy', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.demand_target_type || 'demand_target_liquidity', minRr }));
   }
   if (bearAligned) {
-    const stop = computeSellStop(symbol, price, base.supply_high, num(structure.protected_level));
+    const plannedEntry = num(base.supply_low);
+    const stop = computeSellStop(symbol, plannedEntry || price, base.supply_high, num(structure.protected_level));
     const target = num(liquidity.supply_target_price);
     const quality = num(zones.supply_quality) || 0;
     const liqQuality = num(liquidity.supply_target_quality) || 0;
     const zoneState = classifySellZone(price, base.supply_low, base.supply_high, symbol);
-    const rr = rrFor('sell', price, stop, target);
-    options.push(makeScoredOption({ base, direction: 'sell', zoneState, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.supply_target_type || 'supply_target_liquidity', minRr }));
+    const rr = rrFor('sell', plannedEntry || price, stop, target);
+    options.push(makeScoredOption({ base, direction: 'sell', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.supply_target_type || 'supply_target_liquidity', minRr }));
   }
 
   return options.sort((a, b) => b.confluence_score - a.confluence_score)[0] || base;
 }
 
-function makeScoredOption({ base, direction, zoneState, stop, target, zoneQuality, liquidityQuality, rr, targetSource, minRr }) {
+function makeScoredOption({ base, direction, zoneState, plannedEntry, stop, target, zoneQuality, liquidityQuality, rr, targetSource, minRr }) {
   const badZone = zoneState.includes('invalid') || zoneState === 'no_zone';
   const hasCleanStop = stop && Number.isFinite(Number(stop));
   const hasTarget = target && Number.isFinite(Number(target));
@@ -224,10 +313,11 @@ function makeScoredOption({ base, direction, zoneState, stop, target, zoneQualit
   let score = (biasScore * 0.26) + (structScore * 0.26) + (zoneQuality * 0.16) + (liquidityQuality * 0.16) + (zoneScore * 0.10) + (rrScore * 0.06);
   score = clamp(score, 0, 100);
 
-  const status = zoneState.includes('inside') || zoneState.includes('near') ? 'forming' : 'watch_only';
+  const status = zoneState.includes('inside') || zoneState.includes('near') ? 'forming' : 'candidate';
+  const area = direction === 'buy' ? 'demand' : 'supply';
   const reason = status === 'forming'
-    ? `${direction.toUpperCase()} idea forming — SL is clean first, R:R is ${rr.rr.toFixed(2)}, price is ${zoneState.replaceAll('_', ' ')}. Waiting for live confirmation.`
-    : `${direction.toUpperCase()} watch only — SL and target are mapped, R:R is ${rr.rr.toFixed(2)}, but price is not in the trade area yet.`;
+    ? `${direction.toUpperCase()} idea forming — SL is clean first, projected R:R from the ${area} confirmation area is ${rr.rr.toFixed(2)}, price is ${zoneState.replaceAll('_', ' ')}. Waiting for live confirmation.`
+    : `${direction.toUpperCase()} candidate — bias and structure agree, ${area} zone and liquidity target are mapped, projected R:R from the ${area} confirmation area is ${rr.rr.toFixed(2)}. Waiting for price to approach the zone.`;
 
   return {
     ...base,
@@ -243,19 +333,21 @@ function makeScoredOption({ base, direction, zoneState, stop, target, zoneQualit
     risk_amount: rr.risk,
     reward_amount: rr.reward,
     rr: rr.rr,
+    planned_entry: plannedEntry,
     target_source: targetSource,
     sl_reason: slReason
   };
 }
 
-async function fetchInputs(supabase) {
-  const [biasRun, zonesRun, structureRun, liquidityRun, livePrices] = await Promise.all([
-    latestRun(supabase, 'eve_scan_runs'),
-    latestRun(supabase, 'eve_zones_scan_runs'),
-    latestRun(supabase, 'eve_structure_scan_runs'),
-    latestRun(supabase, 'eve_liquidity_scan_runs'),
+async function fetchInputs(supabase, now = new Date()) {
+  const [freshness, livePrices] = await Promise.all([
+    getSourceFreshness(supabase, now),
     latestLivePrices(supabase)
   ]);
+  const biasRun = freshness.sources.bias?.run || null;
+  const structureRun = freshness.sources.structure?.run || null;
+  const zonesRun = freshness.sources.zones?.run || null;
+  const liquidityRun = freshness.sources.liquidity?.run || null;
   const [biasRows, zonesRows, structureRows, liquidityRows] = await Promise.all([
     rowsForScan(supabase, 'eve_market_scores', biasRun?.id),
     rowsForScan(supabase, 'eve_zones_market_zones', zonesRun?.id),
@@ -263,6 +355,7 @@ async function fetchInputs(supabase) {
     rowsForScan(supabase, 'eve_liquidity_market_results', liquidityRun?.id)
   ]);
   return {
+    source_freshness: freshness,
     runs: { biasRun, zonesRun, structureRun, liquidityRun },
     maps: {
       bias: mapBySymbol(biasRows),
@@ -496,7 +589,44 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
 
   await Promise.all([expireOldIdeas(supabase, now), scoreActiveIdeas(supabase, now)]);
 
-  const inputs = await fetchInputs(supabase);
+  const inputs = await fetchInputs(supabase, now);
+  const current = await getCurrentFocus(supabase);
+  const currentIdea = await getIdea(supabase, current?.idea_id);
+
+  const hasOpenIdea = currentIdea && ['forming', 'armed', 'active'].includes(currentIdea.status) && !isClosedStatus(currentIdea.status);
+  if (!inputs.source_freshness.allFresh && !hasOpenIdea) {
+    const reason = sourceFreshnessReason(inputs.source_freshness);
+    await supabase.from('eve_confluence_current_focus').upsert({
+      id: 'current',
+      symbol: null,
+      direction: null,
+      status: 'waiting_fresh_sources',
+      idea_id: null,
+      confluence_score: 0,
+      reason,
+      locked_at: null,
+      lock_until: null,
+      last_scan_id: run.id,
+      last_scan_at: now.toISOString(),
+      railway_symbol: null,
+      railway_status: 'no_focus',
+      last_live_price: null,
+      last_live_at: null,
+      raw: { source_freshness: inputs.source_freshness },
+      updated_at: now.toISOString()
+    });
+    const completedAt = nowIso();
+    await supabase.from('eve_confluence_scan_runs').update({
+      completed_at: completedAt,
+      mode: 'waiting_fresh_sources',
+      assets_checked: 0,
+      assets_scored: 0,
+      selected_status: 'waiting_fresh_sources',
+      notes: reason
+    }).eq('id', run.id);
+    return { run: { ...run, completed_at: completedAt, mode: 'waiting_fresh_sources' }, selected: null, idea: null, assets: [], inputs };
+  }
+
   const assets = MARKETS.map((market) => buildCandidate(market, {
     bias: inputs.maps.bias[market.symbol],
     zones: inputs.maps.zones[market.symbol],
@@ -535,7 +665,7 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
     zone_state: a.zone_state,
     target_source: a.target_source,
     sl_reason: a.sl_reason,
-    raw: a.raw || {}
+    raw: { ...(a.raw || {}), confluence: { planned_entry: a.planned_entry || null, source_freshness: inputs.source_freshness || null } }
   }));
   if (scoreRows.length) await supabase.from('eve_confluence_asset_scores').insert(scoreRows);
 
@@ -543,15 +673,13 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   const cooldownBlocks = await recentCooldownBlocks(supabase, now, cooldownMinutes);
   const ranked = assets
     .filter((a) => !cooldownBlocks.has(`${a.symbol}|${a.direction}`))
-    .filter((a) => ['forming', 'watch_only'].includes(a.status) && Number(a.confluence_score) >= MIN_SCORE_FOR_FOCUS)
-    .sort((a, b) => {
-      if (a.status !== b.status) return a.status === 'forming' ? -1 : 1;
-      return Number(b.confluence_score || 0) - Number(a.confluence_score || 0);
-    });
+    .filter((a) => a.status === 'forming' && Number(a.confluence_score) >= MIN_SCORE_FOR_FOCUS)
+    .sort((a, b) => Number(b.confluence_score || 0) - Number(a.confluence_score || 0));
+  const mappedCandidates = assets
+    .filter((a) => !cooldownBlocks.has(`${a.symbol}|${a.direction}`))
+    .filter((a) => a.status === 'candidate' && Number(a.confluence_score) >= MIN_SCORE_FOR_FOCUS)
+    .sort((a, b) => Number(b.confluence_score || 0) - Number(a.confluence_score || 0));
   let selected = ranked[0] || null;
-
-  const current = await getCurrentFocus(supabase);
-  const currentIdea = await getIdea(supabase, current?.idea_id);
 
   // A confirmed/active trade idea must be followed until TP, SL, manual cancel,
   // or explicit completion. New scans must not clear or replace an active trade.
@@ -580,7 +708,7 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
       completed_at: completedAt,
       mode: 'active_trade_locked',
       assets_checked: assets.length,
-      assets_scored: ranked.length,
+      assets_scored: ranked.length + mappedCandidates.length,
       selected_symbol: currentIdea.symbol,
       selected_direction: currentIdea.direction,
       selected_status: 'active',
@@ -618,7 +746,7 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
       completed_at: completedAt,
       mode: selectedStatus === 'armed' ? 'armed_idea_locked' : 'forming_idea_locked',
       assets_checked: assets.length,
-      assets_scored: ranked.length,
+      assets_scored: ranked.length + mappedCandidates.length,
       selected_symbol: currentIdea.symbol,
       selected_direction: currentIdea.direction,
       selected_status: selectedStatus,
@@ -634,6 +762,10 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   let idea = null;
   const newFocus = !current || !selected || current.symbol !== selected.symbol || current.direction !== selected.direction || !current.lock_until || new Date(current.lock_until).getTime() <= now.getTime();
   const lockUntil = selected ? (newFocus ? addMinutes(now, focusLockMinutes) : current.lock_until) : null;
+
+  const noFocusReason = mappedCandidates.length
+    ? `${mappedCandidates.length} candidate setup${mappedCandidates.length === 1 ? '' : 's'} mapped, but price is not close enough to the correct zone yet. No WebSocket focus until FORMING.`
+    : 'No asset currently has clean enough confluence, SL, target and R:R.';
 
   if (selected) {
     idea = await createOrUpdateIdea(supabase, selected, current, currentIdea, now, formingTouchMinutes, armedConfirmationMinutes);
@@ -663,10 +795,10 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
       id: 'current',
       symbol: null,
       direction: null,
-      status: 'no_trade',
+      status: mappedCandidates.length ? 'candidate_waiting' : 'no_trade',
       idea_id: null,
-      confluence_score: 0,
-      reason: 'No asset currently has clean enough confluence, SL, target and R:R.',
+      confluence_score: mappedCandidates[0]?.confluence_score || 0,
+      reason: noFocusReason,
       locked_at: null,
       lock_until: null,
       last_scan_id: run.id,
@@ -685,51 +817,63 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
     completed_at: completedAt,
     mode: selected ? 'focus_selected' : 'no_trade',
     assets_checked: assets.length,
-    assets_scored: ranked.length,
+    assets_scored: ranked.length + mappedCandidates.length,
     selected_symbol: selected?.symbol || null,
     selected_direction: selected?.direction || null,
-    selected_status: selected?.status || 'no_trade',
-    notes: selected ? selected.reason : 'No qualifying focus.'
+    selected_status: selected?.status || (mappedCandidates.length ? 'candidate_waiting' : 'no_trade'),
+    notes: selected ? selected.reason : (mappedCandidates.length ? noFocusReason : 'No qualifying focus.')
   }).eq('id', run.id);
 
   return { run: { ...run, completed_at: completedAt }, selected, idea, assets, inputs };
 }
 
+async function latestScoredConfluenceRun(supabase) {
+  const { data, error } = await supabase
+    .from('eve_confluence_scan_runs')
+    .select('*')
+    .gt('assets_checked', 0)
+    .not('completed_at', 'is', null)
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) return null;
+  return data || null;
+}
+
 async function getLatestState(supabase) {
-  const [latestRunRow, focus, liveRows, recentScores, recentIdeas, settings] = await Promise.all([
+  const [latestRunRow, latestScoredRunRow, focus, liveRows, recentScores, recentIdeas, settings, sourceFreshness] = await Promise.all([
     latestRun(supabase, 'eve_confluence_scan_runs'),
+    latestScoredConfluenceRun(supabase),
     getCurrentFocus(supabase),
     supabase.from('eve_confluence_live_prices').select('*'),
     supabase.from('eve_confluence_asset_scores').select('*').order('created_at', { ascending: false }).limit(60),
     supabase.from('eve_confluence_trade_ideas').select('*').order('created_at', { ascending: false }).limit(80),
-    supabase.from('eve_confluence_settings').select('*')
+    supabase.from('eve_confluence_settings').select('*'),
+    getSourceFreshness(supabase, new Date())
   ]);
-  const scanId = latestRunRow?.id;
+  const scanId = latestRunRow?.assets_checked > 0 ? latestRunRow.id : latestScoredRunRow?.id;
   const assets = scanId ? await rowsForScan(supabase, 'eve_confluence_asset_scores', scanId) : [];
   const liveMap = Object.fromEntries((liveRows.data || []).map((r) => [r.symbol, r]));
   const currentIdea = await getIdea(supabase, focus?.idea_id);
   return {
     latest_run: latestRunRow,
+    latest_decision_run: latestScoredRunRow,
     focus,
     current_idea: currentIdea,
     assets,
     live_prices: liveMap,
     recent_scores: recentScores.data || [],
     recent_ideas: recentIdeas.data || [],
+    source_freshness: sourceFreshness,
     settings: Object.fromEntries((settings.data || []).map((s) => [s.key, s.value])),
-    next_scan_at: nextFiveMinuteSlot(4)
+    next_scan_at: nextMinuteSlot()
   };
 }
 
-function nextFiveMinuteSlot(offsetMinute = 4) {
+function nextMinuteSlot() {
   const d = new Date();
-  const m = d.getMinutes();
-  const next = m <= offsetMinute ? offsetMinute : offsetMinute + Math.ceil((m - offsetMinute) / 5) * 5;
-  if (next >= 60) {
-    d.setHours(d.getHours() + 1, offsetMinute, 0, 0);
-  } else {
-    d.setMinutes(next, 0, 0);
-  }
+  d.setSeconds(0, 0);
+  d.setMinutes(d.getMinutes() + 1);
   return d.toISOString();
 }
 

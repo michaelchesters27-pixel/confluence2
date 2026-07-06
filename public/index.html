@@ -20,8 +20,25 @@
         <div class="status-row"><span>Railway WS</span><strong id="railwayState">Waiting</strong></div>
         <div class="status-row"><span>UK Time</span><strong id="ukClock">--:--</strong></div>
         <div class="status-row"><span>Next Scan</span><strong id="nextScan">--:--</strong></div>
+        <button id="soundBtn" class="sound-toggle" type="button">Sound Alerts: Off</button>
       </div>
     </header>
+
+    <section class="source-freshness" id="sourceFreshness">
+      <div class="fresh-head">
+        <div>
+          <span>Backbone Scanner Freshness</span>
+          <strong id="freshSummary">Waiting for source checks</strong>
+        </div>
+        <small id="freshCycle">Cycle --:-- to --:--</small>
+      </div>
+      <div class="fresh-grid">
+        <article class="fresh-card waiting" id="freshBias"><span>Bias</span><strong>Waiting</strong><small>--</small></article>
+        <article class="fresh-card waiting" id="freshStructure"><span>Structure</span><strong>Waiting</strong><small>--</small></article>
+        <article class="fresh-card waiting" id="freshZones"><span>Zones</span><strong>Waiting</strong><small>--</small></article>
+        <article class="fresh-card waiting" id="freshLiquidity"><span>Liquidity</span><strong>Waiting</strong><small>--</small></article>
+      </div>
+    </section>
 
     <section class="hero-grid">
       <div class="eve-core-card">

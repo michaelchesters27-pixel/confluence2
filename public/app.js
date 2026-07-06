@@ -2,7 +2,9 @@ const state = {
   data: null,
   adminPassword: sessionStorage.getItem('eve_admin_password_session') || '',
   adminUnlocked: false,
-  loading: false
+  loading: false,
+  soundEnabled: localStorage.getItem('eve_confluence_sound_enabled') === 'true',
+  lastAlertKey: localStorage.getItem('eve_confluence_last_alert_key') || ''
 };
 
 const $ = (id) => document.getElementById(id);
@@ -44,6 +46,80 @@ function showToast(msg) {
 }
 
 function setClock() { $('ukClock').textContent = fmtTime(new Date().toISOString()); }
+
+function fmtWindow(start, end) {
+  return `${fmtTime(start)} to ${fmtTime(end)}`;
+}
+
+function soundLabel() {
+  return state.soundEnabled ? 'Sound Alerts: On' : 'Sound Alerts: Off';
+}
+
+function updateSoundButton() {
+  const btn = $('soundBtn');
+  if (!btn) return;
+  btn.textContent = soundLabel();
+  btn.classList.toggle('sound-on', state.soundEnabled);
+}
+
+function playTone(kind = 'forming') {
+  if (!state.soundEnabled) return;
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = playTone._ctx || new AudioContext();
+    playTone._ctx = ctx;
+    if (ctx.state === 'suspended') ctx.resume();
+    const pattern = kind === 'active' ? [880, 1040, 880] : kind === 'armed' ? [740, 880] : [620];
+    pattern.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const start = ctx.currentTime + i * 0.16;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.10, start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.13);
+      osc.start(start);
+      osc.stop(start + 0.15);
+    });
+  } catch (_) {}
+}
+
+function maybeSoundAlert(focus, idea) {
+  const status = idea?.status || focus?.status;
+  const symbol = idea?.symbol || focus?.symbol;
+  if (!symbol || !['forming', 'armed', 'active'].includes(status)) return;
+  const key = `${idea?.id || symbol}:${status}`;
+  if (!state.lastAlertKey) {
+    state.lastAlertKey = key;
+    localStorage.setItem('eve_confluence_last_alert_key', key);
+    return;
+  }
+  if (state.lastAlertKey === key) return;
+  state.lastAlertKey = key;
+  localStorage.setItem('eve_confluence_last_alert_key', key);
+  playTone(status);
+  showToast(`${symbol} ${String(status).toUpperCase()} alert`);
+}
+
+function renderFreshness(freshness) {
+  const sources = freshness?.sources || {};
+  const ids = { bias: 'freshBias', structure: 'freshStructure', zones: 'freshZones', liquidity: 'freshLiquidity' };
+  const labels = { bias: 'Bias', structure: 'Structure', zones: 'Zones', liquidity: 'Liquidity' };
+  for (const key of Object.keys(ids)) {
+    const el = $(ids[key]);
+    if (!el) continue;
+    const src = sources[key] || {};
+    const fresh = Boolean(src.fresh);
+    el.className = `fresh-card ${fresh ? 'fresh' : 'waiting'}`;
+    el.innerHTML = `<span>${labels[key]}</span><strong>${fresh ? '✓ Fresh' : 'Waiting'}</strong><small>${fresh ? fmtTime(src.completed_at || src.started_at) : 'No fresh scan yet'}</small>`;
+  }
+  $('freshSummary').textContent = freshness?.allFresh ? 'All four fresh — Confluence decision allowed' : `Waiting: ${(freshness?.waiting || ['source scanners']).join(', ')}`;
+  $('freshCycle').textContent = freshness?.cycle_start ? `Source cycle ${fmtWindow(freshness.cycle_start, freshness.cycle_end)}` : 'Source cycle waiting';
+}
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -107,11 +183,14 @@ function render(data) {
   $('lastScan').textContent = `Last scan: ${fmtDateTime(run?.completed_at || run?.started_at)}`;
   $('coreStatus').textContent = focus?.symbol ? 'LOCKED' : 'WAITING';
   $('toggleBtn').textContent = enabled ? 'Turn Confluence Off' : 'Turn Confluence On';
+  updateSoundButton();
+  renderFreshness(data.source_freshness);
 
   renderFocus(focus, idea, live);
   renderPlan(focus, idea);
   renderIdea(focus, idea);
   renderGrid(data.assets || []);
+  maybeSoundAlert(focus, idea);
 }
 
 function renderFocus(focus, idea, live) {
@@ -161,7 +240,13 @@ function renderIdea(focus, idea) {
   chip.className = `status-chip ${statusClass(currentStatus, idea?.direction || focus?.direction)}`;
 
   if (!focus?.symbol) {
-    body.innerHTML = `No trade. EVE has not found an asset with clean confluence, a clean SL, a meaningful target and minimum 1:2 R:R.`;
+    if (focus?.status === 'waiting_fresh_sources') {
+      body.innerHTML = `<strong>Waiting for fresh backbone scans.</strong><br />${escapeHtml(focus.reason || 'Bias, Structure, Zones and Liquidity must all be fresh before Confluence can judge a trade.')}`;
+    } else if (focus?.status === 'candidate_waiting') {
+      body.innerHTML = `<strong>Candidate setup mapped.</strong><br />${escapeHtml(focus.reason || 'Price is not close enough to the correct zone yet.')}`;
+    } else {
+      body.innerHTML = `No trade. EVE has not found an asset with clean confluence, a clean SL, a meaningful target and minimum 1:2 R:R.`;
+    }
     return;
   }
 
@@ -211,6 +296,7 @@ function renderGrid(assets) {
     const score = Math.round(Number(m.confluence_score || 0));
     const cls = ['market-card'];
     if (m.status === 'forming' || m.status === 'armed') cls.push('hot');
+    if (m.status === 'candidate') cls.push('candidate');
     if (m.status === 'no_trade') cls.push('choppy');
     return `
       <article class="${cls.join(' ')}">
@@ -364,6 +450,22 @@ async function setPassword() {
 
 function init() {
   $('refreshBtn').addEventListener('click', loadLatest);
+  $('soundBtn').addEventListener('click', () => {
+    state.soundEnabled = !state.soundEnabled;
+    localStorage.setItem('eve_confluence_sound_enabled', state.soundEnabled ? 'true' : 'false');
+    if (state.data) {
+      const focus = state.data.focus;
+      const idea = state.data.current_idea;
+      const status = idea?.status || focus?.status;
+      const symbol = idea?.symbol || focus?.symbol;
+      if (symbol && ['forming', 'armed', 'active'].includes(status)) {
+        state.lastAlertKey = `${idea?.id || symbol}:${status}`;
+        localStorage.setItem('eve_confluence_last_alert_key', state.lastAlertKey);
+      }
+    }
+    updateSoundButton();
+    showToast(state.soundEnabled ? 'Sound alerts enabled.' : 'Sound alerts disabled.');
+  });
   $('adminFab').addEventListener('click', openAdmin);
   $('closeAdminBtn').addEventListener('click', closeAdmin);
   $('adminModal').addEventListener('click', (event) => { if (event.target === $('adminModal')) closeAdmin(); });
@@ -374,6 +476,7 @@ function init() {
   $('statsBtn').addEventListener('click', openStats);
   $('closeStatsBtn').addEventListener('click', () => $('statsModal').classList.add('hidden'));
   setClock();
+  updateSoundButton();
   setInterval(setClock, 1000);
   loadLatest();
   setInterval(loadLatest, 2500);
