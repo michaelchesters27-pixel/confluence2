@@ -387,6 +387,19 @@ async function scoreActiveIdeas(supabase, now) {
       latest_note: won ? 'Target liquidity reached before SL.' : 'Stop loss reached before target.',
       updated_at: now.toISOString()
     }).eq('id', idea.id);
+    await supabase.from('eve_confluence_current_focus').upsert({
+      id: 'current',
+      symbol: null,
+      direction: null,
+      status,
+      idea_id: null,
+      reason: won ? 'Trade idea won. TP reached first.' : 'Trade idea lost. SL reached first.',
+      railway_symbol: null,
+      railway_status: 'no_focus',
+      last_live_price: null,
+      last_live_at: null,
+      updated_at: now.toISOString()
+    });
     await supabase.from('eve_confluence_events').insert({ event_type: won ? 'idea_won' : 'idea_lost', symbol: idea.symbol, idea_id: idea.id, message: won ? 'Trade idea won. TP reached first.' : 'Trade idea lost. SL reached first.', raw: { price } });
   }
 }
@@ -409,6 +422,25 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   if (runError) throw runError;
 
   if (!scannerEnabled) {
+    await supabase.from('eve_confluence_current_focus').upsert({
+      id: 'current',
+      symbol: null,
+      direction: null,
+      status: 'confluence_off',
+      idea_id: null,
+      confluence_score: 0,
+      reason: 'Confluence scanner is turned off.',
+      locked_at: null,
+      lock_until: null,
+      last_scan_id: run.id,
+      last_scan_at: now.toISOString(),
+      railway_symbol: null,
+      railway_status: 'no_focus',
+      last_live_price: null,
+      last_live_at: null,
+      raw: {},
+      updated_at: now.toISOString()
+    });
     await supabase.from('eve_confluence_scan_runs').update({ completed_at: nowIso(), mode: 'confluence_off', notes: 'Scanner off.' }).eq('id', run.id);
     return { run: { ...run, completed_at: nowIso(), mode: 'confluence_off' }, selected: null, assets: [] };
   }
@@ -424,8 +456,9 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
     live: inputs.maps.live[market.symbol]
   }, minRr));
 
-  const scoreRows = assets.map((a) => ({
+  const scoreRows = assets.map((a, index) => ({
     scan_id: run.id,
+    rank: index + 1,
     symbol: a.symbol,
     display_name: a.display_name,
     asset_class: a.asset_class,

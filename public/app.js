@@ -133,7 +133,8 @@ function renderFocus(focus, idea, live) {
   $('lockInfo').textContent = `Focus lock until: ${fmtTime(focus.lock_until)} • 15 min lock`;
   const freshLive = isFreshLiveForFocus(focus, live);
   $('livePrice').textContent = freshLive ? formatPrice(live.price, focus.symbol) : '--';
-  $('livePriceAt').textContent = freshLive ? `Updated ${fmtTime(live.received_at)}` : 'Waiting for Railway live price';
+  const src = live?.source === 'railway_twelvedata_rest_fallback' ? 'REST fallback' : 'Railway WS';
+  $('livePriceAt').textContent = freshLive ? `Updated ${fmtTime(live.received_at)} • ${src}` : 'Waiting for Railway live price';
 }
 
 function renderPlan(focus, idea) {

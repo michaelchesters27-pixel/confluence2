@@ -30,6 +30,7 @@ create table if not exists public.eve_confluence_scan_runs (
 create table if not exists public.eve_confluence_asset_scores (
   id bigserial primary key,
   scan_id uuid not null references public.eve_confluence_scan_runs(id) on delete cascade,
+  rank int,
   symbol text not null,
   display_name text,
   asset_class text check (asset_class in ('forex','metal','crypto') or asset_class is null),
@@ -155,6 +156,11 @@ create table if not exists public.eve_confluence_events (
   raw jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
+
+
+-- Safe patch for existing installs.
+alter table public.eve_confluence_asset_scores
+  add column if not exists rank int;
 
 create index if not exists eve_confluence_runs_started_idx
   on public.eve_confluence_scan_runs(started_at desc);
