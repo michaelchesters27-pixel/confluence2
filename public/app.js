@@ -1,6 +1,7 @@
 const state = {
   data: null,
-  adminPassword: localStorage.getItem('eve_admin_password') || '',
+  adminPassword: sessionStorage.getItem('eve_admin_password_session') || '',
+  adminUnlocked: false,
   loading: false
 };
 
@@ -228,9 +229,43 @@ function renderGrid(assets) {
   }).join('');
 }
 
-function openAdmin() {
-  $('adminModal').classList.remove('hidden');
-  $('adminFab').setAttribute('aria-expanded', 'true');
+async function verifyAdminPassword(password) {
+  const res = await fetch('/.netlify/functions/admin-check', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-eve-admin-password': password
+    },
+    body: '{}'
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Wrong admin password');
+  return true;
+}
+
+async function openAdmin() {
+  const value = prompt('Enter EVE admin password:');
+  if (value === null) return;
+  const password = value.trim();
+  if (!password) {
+    showToast('Admin password required.');
+    return;
+  }
+  try {
+    await verifyAdminPassword(password);
+    state.adminPassword = password;
+    state.adminUnlocked = true;
+    sessionStorage.setItem('eve_admin_password_session', password);
+    $('adminModal').classList.remove('hidden');
+    $('adminFab').setAttribute('aria-expanded', 'true');
+  } catch (err) {
+    state.adminPassword = '';
+    state.adminUnlocked = false;
+    sessionStorage.removeItem('eve_admin_password_session');
+    $('adminModal').classList.add('hidden');
+    $('adminFab').setAttribute('aria-expanded', 'false');
+    showToast(err.message || 'Wrong admin password.');
+  }
 }
 
 function closeAdmin() {
@@ -308,12 +343,23 @@ async function unlockFocus() {
   } catch (err) { showToast(err.message); }
 }
 
-function setPassword() {
-  const value = prompt('Enter EVE admin password for this browser:', state.adminPassword || '');
+async function setPassword() {
+  const value = prompt('Re-enter EVE admin password:');
   if (value === null) return;
-  state.adminPassword = value.trim();
-  localStorage.setItem('eve_admin_password', state.adminPassword);
-  showToast('Admin password saved in this browser.');
+  const password = value.trim();
+  if (!password) {
+    showToast('Admin password required.');
+    return;
+  }
+  try {
+    await verifyAdminPassword(password);
+    state.adminPassword = password;
+    state.adminUnlocked = true;
+    sessionStorage.setItem('eve_admin_password_session', password);
+    showToast('Admin unlocked for this browser tab.');
+  } catch (err) {
+    showToast(err.message || 'Wrong admin password.');
+  }
 }
 
 function init() {

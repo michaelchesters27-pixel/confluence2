@@ -141,7 +141,13 @@ V6 9-ASSET PATCH
 - Run supabase/v6-9assets-confluence-patch.sql once after deploy.
 
 
-## v7 admin button update
+## v8 admin button update
 - Main page admin controls are hidden behind a small fixed Admin button.
 - Admin panel contains Idea Stats, Scan Now, Unlock Focus, Turn Confluence On/Off, and Set/Change Admin Password.
 - Confluence asset list is hard-filtered to 9 assets: EUR/USD, GBP/USD, AUD/USD, USD/JPY, USD/CAD, EUR/JPY, GBP/JPY, XAU/USD, BTC/USD.
+
+
+V8 ADMIN GATE:
+- Pressing the small Admin button now prompts for the EVE admin password before any admin controls are shown.
+- Idea Stats is now also protected by the admin password.
+- Password is kept only for the current browser tab session after a successful prompt.

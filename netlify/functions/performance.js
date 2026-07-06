@@ -1,10 +1,11 @@
 const { getSupabase } = require('./lib/supabase');
-const { ok, bad } = require('./lib/http');
+const { ok, bad, requireAdmin } = require('./lib/http');
 const { performanceStats } = require('./lib/confluence-core');
 
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') return ok({});
   try {
+    requireAdmin(event);
     const supabase = getSupabase();
     const limit = Math.min(Number(event.queryStringParameters?.limit || 250), 500);
     const { data, error } = await supabase
