@@ -1,6 +1,7 @@
 const MIN_SCORE_FOR_FOCUS = 50;
 const MIN_BIAS_QUALITY_FOR_TRADE = 70;
 const SOURCE_FRESHNESS_LAG_MINUTES = 4;
+const SOURCE_FRESHNESS_LOOKBACK_MINUTES = 7;
 
 const SOURCE_SCANNERS = [
   { key: 'bias', label: 'Bias', runTable: 'eve_scan_runs', rowTable: 'eve_market_scores' },
@@ -26,6 +27,8 @@ function addMinutes(date, minutes) { return new Date(date.getTime() + minutes * 
 function num(value) { const n = Number(value); return Number.isFinite(n) ? n : null; }
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 function lower(value) { return String(value || '').toLowerCase(); }
+function displayedPercent(value) { return Math.round(clamp(Number(value) || 0, 0, 100)); }
+function withProgress(obj, progress) { return { ...obj, confluence_score: Math.max(Number(obj.confluence_score || 0), progress) }; }
 function isBullish(value) { const v = lower(value); return v.includes('bull') || v === 'buy'; }
 function isBearish(value) { const v = lower(value); return v.includes('bear') || v === 'sell'; }
 function isClosedStatus(status) { return ['won', 'lost', 'no_trigger', 'invalidated_before_entry', 'expired', 'cancelled'].includes(status); }
@@ -150,12 +153,13 @@ function floorToFiveMinutes(date) {
 }
 
 function sourceDecisionCycle(now = new Date()) {
-  // Source scanners run at 00/01/02/03. Confluence should judge that full
-  // completed source cycle from minute 04 until the next cycle is ready.
-  const shifted = new Date(now.getTime() - SOURCE_FRESHNESS_LAG_MINUTES * 60_000);
-  const cycleStart = floorToFiveMinutes(shifted);
-  const cycleEnd = new Date(cycleStart.getTime() + 5 * 60_000);
-  return { start: cycleStart, end: cycleEnd };
+  // Reviewed v10 rule: use the latest real completed scanner run inside a
+  // rolling freshness window. This is deliberately more stable than forcing
+  // every source scanner to land inside the exact same 5-minute bucket,
+  // because Netlify scheduled functions drift by seconds/minutes.
+  const end = new Date(now.getTime() + 60_000);
+  const start = new Date(now.getTime() - SOURCE_FRESHNESS_LOOKBACK_MINUTES * 60_000);
+  return { start, end };
 }
 
 function isRealSourceRun(run) {
@@ -252,15 +256,18 @@ function buildCandidate(market, data, minRr) {
   if (!bias || !structure || !zones || !liquidity) return { ...base, reason: 'Waiting for Bias, Structure, Zones and Liquidity to all report.' };
 
   const biasScore = num(bias?.score ?? bias?.bias_score) || 0;
-  if (biasScore < MIN_BIAS_QUALITY_FOR_TRADE || lower(bias.bias).includes('watch')) {
-    return { ...base, reason: `No trade — bias is only ${Math.round(biasScore)}%${lower(bias.bias).includes('watch') ? ' / Watch Only' : ''}. Minimum clean bias is ${MIN_BIAS_QUALITY_FOR_TRADE}%. Bias is the gatekeeper.` };
+  const shownBiasScore = displayedPercent(biasScore);
+  if (shownBiasScore < MIN_BIAS_QUALITY_FOR_TRADE || lower(bias.bias).includes('watch')) {
+    return { ...base, reason: `No trade — bias is only ${shownBiasScore}%${lower(bias.bias).includes('watch') ? ' / Watch Only' : ''}. Minimum clean bias is ${MIN_BIAS_QUALITY_FOR_TRADE}%. Bias is the gatekeeper.` };
   }
 
+  const biasPassed = withProgress(base, 25);
   const bullAligned = isBullish(bias.bias) && isBullish(structure.structure_bias);
   const bearAligned = isBearish(bias.bias) && isBearish(structure.structure_bias);
   if (!bullAligned && !bearAligned) {
-    return { ...base, reason: `No trade — bias and structure are not cleanly aligned. Bias: ${bias.bias || 'n/a'}, Structure: ${structure.structure_bias || 'n/a'}.` };
+    return { ...biasPassed, reason: `Bias passed at ${shownBiasScore}%, but structure is not cleanly aligned. Bias: ${bias.bias || 'n/a'}, Structure: ${structure.structure_bias || 'n/a'}.` };
   }
+  const alignedBase = withProgress(base, 45);
 
   const options = [];
   if (bullAligned) {
@@ -271,7 +278,7 @@ function buildCandidate(market, data, minRr) {
     const liqQuality = num(liquidity.demand_target_quality) || 0;
     const zoneState = classifyBuyZone(price, base.demand_low, base.demand_high, symbol);
     const rr = rrFor('buy', plannedEntry || price, stop, target);
-    options.push(makeScoredOption({ base, direction: 'buy', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.demand_target_type || 'demand_target_liquidity', minRr }));
+    options.push(makeScoredOption({ base: alignedBase, direction: 'buy', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.demand_target_type || 'demand_target_liquidity', minRr }));
   }
   if (bearAligned) {
     const plannedEntry = num(base.supply_low);
@@ -281,7 +288,7 @@ function buildCandidate(market, data, minRr) {
     const liqQuality = num(liquidity.supply_target_quality) || 0;
     const zoneState = classifySellZone(price, base.supply_low, base.supply_high, symbol);
     const rr = rrFor('sell', plannedEntry || price, stop, target);
-    options.push(makeScoredOption({ base, direction: 'sell', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.supply_target_type || 'supply_target_liquidity', minRr }));
+    options.push(makeScoredOption({ base: alignedBase, direction: 'sell', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.supply_target_type || 'supply_target_liquidity', minRr }));
   }
 
   return options.sort((a, b) => b.confluence_score - a.confluence_score)[0] || base;
@@ -294,16 +301,16 @@ function makeScoredOption({ base, direction, zoneState, plannedEntry, stop, targ
   const slReason = direction === 'buy' ? 'Below demand / protected low. SL calculated before idea.' : 'Above supply / protected high. SL calculated before idea.';
 
   if (!hasCleanStop) {
-    return { ...base, direction, zone_state: zoneState, stop_loss: null, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, reason: 'No trade — stop loss is not clean. No SL = no trade idea.' };
+    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: null, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, reason: 'No trade — stop loss is not clean. No SL = no trade idea.' }, 45);
   }
   if (!hasTarget) {
-    return { ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: null, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, sl_reason: slReason, reason: 'No trade — no meaningful liquidity target.' };
+    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: null, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, sl_reason: slReason, reason: 'No trade — no meaningful liquidity target.' }, 55);
   }
   if (badZone) {
-    return { ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, rr: rr.rr, risk_amount: rr.risk, reward_amount: rr.reward, sl_reason: slReason, reason: `No trade — price has invalidated the ${direction === 'buy' ? 'demand' : 'supply'} area.` };
+    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, rr: rr.rr, risk_amount: rr.risk, reward_amount: rr.reward, sl_reason: slReason, reason: `No trade — price has invalidated the ${direction === 'buy' ? 'demand' : 'supply'} area.` }, 50);
   }
   if (!rr.rr || rr.rr < minRr) {
-    return { ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, rr: rr.rr || 0, risk_amount: rr.risk, reward_amount: rr.reward, sl_reason: slReason, target_source: targetSource, reason: `No trade — SL exists, but R:R is only ${Number(rr.rr || 0).toFixed(2)}. Minimum is 1:${minRr}.` };
+    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, rr: rr.rr || 0, risk_amount: rr.risk, reward_amount: rr.reward, sl_reason: slReason, target_source: targetSource, reason: `No trade — SL exists, but R:R is only ${Number(rr.rr || 0).toFixed(2)}. Minimum is 1:${minRr}.` }, 70);
   }
 
   const zoneScore = zoneState.includes('inside') ? 100 : zoneState.includes('near') ? 82 : 52;

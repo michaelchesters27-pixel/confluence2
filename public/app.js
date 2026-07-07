@@ -118,7 +118,7 @@ function renderFreshness(freshness) {
     el.innerHTML = `<span>${labels[key]}</span><strong>${fresh ? '✓ Fresh' : 'Waiting'}</strong><small>${fresh ? fmtTime(src.completed_at || src.started_at) : 'No fresh scan yet'}</small>`;
   }
   $('freshSummary').textContent = freshness?.allFresh ? 'All four fresh — Confluence decision allowed' : `Waiting: ${(freshness?.waiting || ['source scanners']).join(', ')}`;
-  $('freshCycle').textContent = freshness?.cycle_start ? `Source cycle ${fmtWindow(freshness.cycle_start, freshness.cycle_end)}` : 'Source cycle waiting';
+  $('freshCycle').textContent = freshness?.cycle_start ? `Freshness window ${fmtWindow(freshness.cycle_start, freshness.cycle_end)}` : 'Freshness window waiting';
 }
 
 async function api(path, options = {}) {

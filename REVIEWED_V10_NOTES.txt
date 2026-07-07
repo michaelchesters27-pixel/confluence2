@@ -1,0 +1,12 @@
+EVE Confluence v10 reviewed patch
+
+Built from uploaded v9 file: eve-confluence-machine-github-ready-v9-freshness-candidate-alerts(1).zip
+
+Changes after inspection:
+1. Replaced exact 5-minute source-cycle requirement with a rolling 7-minute latest-real-run freshness window.
+   This avoids false 'Waiting' states when Netlify scheduled scanner functions drift.
+2. Bias gate now matches the displayed rounded score. If dashboard shows 70%, Bias passes.
+3. Confluence card progress now shows filter progress after Bias/Structure/SL/Target/R:R checks, instead of staying 0% after Bias has passed.
+4. Dashboard label now says Freshness window instead of Source cycle.
+
+No SQL changes. Railway code unchanged.
