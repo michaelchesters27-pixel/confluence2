@@ -212,6 +212,7 @@ values
   ('minimum_rr', '2'::jsonb, now(), 'setup'),
   ('focus_lock_minutes', '15'::jsonb, now(), 'setup'),
   ('idea_expiry_minutes', '45'::jsonb, now(), 'setup'),
+  ('candidate_memory_minutes', '120'::jsonb, now(), 'setup'),
   ('forming_touch_minutes', '15'::jsonb, now(), 'setup'),
   ('armed_confirmation_minutes', '30'::jsonb, now(), 'setup'),
   ('confirmation_hold_seconds', '30'::jsonb, now(), 'setup'),

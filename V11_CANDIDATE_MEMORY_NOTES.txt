@@ -1,0 +1,17 @@
+EVE Confluence v11 - Candidate Memory Engine
+
+Built from the uploaded v10 reviewed working fix.
+
+Core change:
+- Bias 70%+ now opens and saves a candidate instead of requiring Bias to stay 70% during the retrace.
+- Saved candidates use status watch_only in eve_confluence_trade_ideas.
+- Candidate memory lasts 120 minutes by default via candidate_memory_minutes.
+- Bias cooling during pullback is allowed.
+- Bias/structure flipping against the idea invalidates the saved candidate.
+- If the target is taken before price pulls back into the zone, the candidate expires.
+- If price reaches the saved zone/near-zone later, the saved candidate promotes to forming/armed and Railway focuses that asset.
+- Active/forming/armed ideas remain locked and are not replaced by new candidates.
+
+No Railway code changes were made.
+No existing scanner tables are changed.
+Run supabase/v11-candidate-memory-patch.sql if you want the candidate_memory_minutes setting stored in Supabase. The code also defaults to 120 minutes if the setting is absent.

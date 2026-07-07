@@ -2,6 +2,7 @@ const MIN_SCORE_FOR_FOCUS = 50;
 const MIN_BIAS_QUALITY_FOR_TRADE = 70;
 const SOURCE_FRESHNESS_LAG_MINUTES = 4;
 const SOURCE_FRESHNESS_LOOKBACK_MINUTES = 7;
+const DEFAULT_CANDIDATE_MEMORY_MINUTES = 120;
 
 const SOURCE_SCANNERS = [
   { key: 'bias', label: 'Bias', runTable: 'eve_scan_runs', rowTable: 'eve_market_scores' },
@@ -451,9 +452,27 @@ async function createOrUpdateIdea(supabase, selected, currentFocus, currentIdea,
   };
 
   const canReuse = currentIdea && !isClosedStatus(currentIdea.status) && currentIdea.symbol === selected.symbol && currentIdea.direction === selected.direction;
-  if (canReuse) {
-    const { data, error } = await supabase.from('eve_confluence_trade_ideas').update(payload).eq('id', currentIdea.id).select('*').single();
+  const reuseId = selected.memory_idea_id || (canReuse ? currentIdea.id : null);
+  if (reuseId) {
+    const updatePayload = {
+      ...payload,
+      formed_at: selected.memory_formed_at || currentIdea?.formed_at || payload.formed_at,
+      reason: selected.memory_idea_id ? `Saved candidate promoted to ${status.toUpperCase()} after price approached the zone.` : payload.reason,
+      raw: { ...(payload.raw || {}), promoted_from_candidate_memory: Boolean(selected.memory_idea_id) }
+    };
+    const { data, error } = await supabase.from('eve_confluence_trade_ideas').update(updatePayload).eq('id', reuseId).select('*').single();
     if (error) throw error;
+    if (selected.memory_idea_id) {
+      await supabase.from('eve_confluence_events').insert({
+        event_type: status === 'armed' ? 'candidate_promoted_armed' : 'candidate_promoted_forming',
+        symbol: selected.symbol,
+        idea_id: data.id,
+        message: status === 'armed'
+          ? `${selected.symbol} saved ${selected.direction.toUpperCase()} candidate is armed. Zone touched. Waiting confirmation.`
+          : `${selected.symbol} saved ${selected.direction.toUpperCase()} candidate is forming. Price has approached the zone.`,
+        raw: { zone_state: selected.zone_state, rr: selected.rr }
+      });
+    }
     return data;
   }
 
@@ -478,25 +497,32 @@ async function expireOldIdeas(supabase, now) {
     .lt('expires_at', now.toISOString());
   for (const idea of ideas || []) {
     const expiredBeforeTouch = idea.status === 'forming' && !idea.touched_zone;
-    const note = expiredBeforeTouch
-      ? 'Idea expired before price touched the correct zone.'
-      : 'Idea expired after zone touch but before live confirmation.';
+    const expiredCandidate = idea.status === 'watch_only';
+    const note = expiredCandidate
+      ? 'Saved candidate expired before price pulled back into the correct zone.'
+      : (expiredBeforeTouch
+        ? 'Idea expired before price touched the correct zone.'
+        : 'Idea expired after zone touch but before live confirmation.');
     await supabase.from('eve_confluence_trade_ideas').update({
       status: 'expired', outcome: 'expired', completed_at: now.toISOString(), updated_at: now.toISOString(), latest_note: note
     }).eq('id', idea.id);
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: null,
-      direction: null,
-      status: 'no_trade',
-      idea_id: null,
-      reason: note,
-      railway_symbol: null,
-      railway_status: 'no_focus',
-      last_live_price: null,
-      last_live_at: null,
-      updated_at: now.toISOString()
-    });
+
+    const { data: focus } = await supabase.from('eve_confluence_current_focus').select('idea_id').eq('id', 'current').maybeSingle();
+    if (focus?.idea_id === idea.id) {
+      await supabase.from('eve_confluence_current_focus').upsert({
+        id: 'current',
+        symbol: null,
+        direction: null,
+        status: 'no_trade',
+        idea_id: null,
+        reason: note,
+        railway_symbol: null,
+        railway_status: 'no_focus',
+        last_live_price: null,
+        last_live_at: null,
+        updated_at: now.toISOString()
+      });
+    }
     await supabase.from('eve_confluence_events').insert({ event_type: 'idea_expired', symbol: idea.symbol, idea_id: idea.id, message: note });
   }
 }
@@ -540,6 +566,234 @@ async function scoreActiveIdeas(supabase, now) {
 }
 
 
+
+function openIdeaStatuses() { return ['watch_only', 'forming', 'armed', 'active']; }
+
+async function getOpenIdeas(supabase) {
+  const { data, error } = await supabase
+    .from('eve_confluence_trade_ideas')
+    .select('*')
+    .in('status', openIdeaStatuses())
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data || [];
+}
+
+function ideaKey(symbol, direction) { return `${symbol}|${direction}`; }
+
+function oppositeBiasForIdea(direction, biasRow) {
+  const score = displayedPercent(num(biasRow?.score ?? biasRow?.bias_score) || 0);
+  const b = biasRow?.bias;
+  if (!b || score < 58) return false;
+  return direction === 'buy' ? isBearish(b) : isBullish(b);
+}
+
+function oppositeStructureForIdea(direction, structureRow) {
+  const s = structureRow?.structure_bias;
+  if (!s) return false;
+  return direction === 'buy' ? isBearish(s) : isBullish(s);
+}
+
+function zoneStateFromIdea(idea, price) {
+  if (!price) return 'waiting_for_price';
+  if (idea.direction === 'buy') return classifyBuyZone(price, num(idea.demand_low), num(idea.demand_high), idea.symbol);
+  return classifySellZone(price, num(idea.supply_low), num(idea.supply_high), idea.symbol);
+}
+
+function memoryScore(idea, zoneState) {
+  const savedScore = num(idea.raw?.v11_candidate?.confluence_score ?? idea.raw?.confluence_score);
+  const base = Number.isFinite(savedScore) ? savedScore : clamp(55 + (Number(idea.rr || 0) * 6), 55, 88);
+  if (zoneState.includes('inside')) return clamp(base + 12, 0, 100);
+  if (zoneState.includes('near')) return clamp(base + 7, 0, 100);
+  return clamp(base, 0, 100);
+}
+
+function savedCandidateAsset(idea, market, data, minRr) {
+  const { bias, zones, structure, liquidity, live } = data;
+  const price = pickPrice(idea.symbol, live, bias, zones, structure, liquidity) || num(idea.last_live_price) || num(idea.forming_price);
+  const zoneState = zoneStateFromIdea(idea, price);
+  const status = zoneState.includes('inside') || zoneState.includes('near') ? 'forming' : 'candidate';
+  const score = memoryScore(idea, zoneState);
+  const snap = idea.raw?.v11_candidate || {};
+  const currentBiasScore = displayedPercent(num(bias?.score ?? bias?.bias_score) || 0);
+  const snapshotText = snap.bias_score ? `${Math.round(Number(snap.bias_score))}% ${snap.bias || idea.direction}` : `${idea.direction.toUpperCase()} snapshot`;
+  const currentBiasText = bias ? `${currentBiasScore}% ${bias.bias || ''}`.trim() : 'waiting';
+  const area = idea.direction === 'buy' ? 'demand' : 'supply';
+  const waitingReason = `${idea.direction.toUpperCase()} candidate saved — Bias gate opened at ${snapshotText}. Current bias is ${currentBiasText}. Bias may cool during the retrace; candidate stays valid unless bias/structure flips, zone fails, target is taken, or expiry hits. Waiting for pullback into ${area}.`;
+  const formingReason = `${idea.direction.toUpperCase()} saved candidate is now ${zoneState.replaceAll('_', ' ')}. Bias snapshot remains valid. Waiting for live ${idea.direction === 'buy' ? 'demand reclaim' : 'supply rejection'} confirmation.`;
+
+  return {
+    symbol: idea.symbol,
+    display_name: market?.display_name || idea.symbol,
+    asset_class: market?.asset_class || (idea.symbol === 'XAU/USD' ? 'metal' : idea.symbol === 'BTC/USD' ? 'crypto' : 'forex'),
+    is_open: true,
+    latest_price: price,
+    bias: bias?.bias || snap.bias || null,
+    bias_score: num(bias?.score ?? bias?.bias_score) || snap.bias_score || 0,
+    structure_bias: structure?.structure_bias || snap.structure_bias || null,
+    structure_score: num(structure?.score) || snap.structure_score || 0,
+    demand_low: num(idea.demand_low),
+    demand_high: num(idea.demand_high),
+    supply_low: num(idea.supply_low),
+    supply_high: num(idea.supply_high),
+    direction: idea.direction,
+    status,
+    confluence_score: score,
+    reason: status === 'forming' ? formingReason : waitingReason,
+    stop_loss: num(idea.stop_loss),
+    target_price: num(idea.take_profit),
+    risk_amount: num(idea.risk_amount),
+    reward_amount: num(idea.reward_amount),
+    rr: num(idea.rr) || 0,
+    zone_state: zoneState,
+    zone_quality: snap.zone_quality || null,
+    liquidity_quality: snap.liquidity_quality || null,
+    target_source: idea.target_source,
+    sl_reason: idea.sl_reason,
+    planned_entry: idea.direction === 'buy' ? num(idea.demand_high) : num(idea.supply_low),
+    memory_idea_id: idea.id,
+    memory_formed_at: idea.formed_at || idea.created_at,
+    raw: { ...(idea.raw || {}), memory_idea_id: idea.id, memory_status: idea.status, current_bias: bias || null, current_structure: structure || null, current_zone_state: zoneState }
+  };
+}
+
+function mergeMemoryAssets(assets, memoryAssets) {
+  const priority = { active: 6, armed: 5, forming: 4, candidate: 3, watch_only: 2, no_trade: 0 };
+  const map = Object.fromEntries((assets || []).map((a) => [a.symbol, a]));
+  for (const m of memoryAssets || []) {
+    const existing = map[m.symbol];
+    const ep = priority[existing?.status] || 0;
+    const mp = priority[m.status] || 0;
+    if (!existing || mp > ep || (mp === ep && Number(m.confluence_score || 0) > Number(existing.confluence_score || 0))) {
+      map[m.symbol] = m;
+    }
+  }
+  return MARKETS.map((market) => map[market.symbol]).filter(Boolean);
+}
+
+function savedCandidateInvalidation(idea, data, price, minRr) {
+  const { bias, structure } = data;
+  if (!price) return null;
+  const direction = idea.direction;
+  if (oppositeBiasForIdea(direction, bias)) return `Candidate invalidated — current Bias has flipped against the saved ${direction.toUpperCase()} idea.`;
+  if (oppositeStructureForIdea(direction, structure)) return `Candidate invalidated — current Structure has flipped against the saved ${direction.toUpperCase()} idea.`;
+  if (direction === 'buy' && price <= Number(idea.stop_loss)) return 'Candidate invalidated — price reached the saved buy invalidation/SL before entry.';
+  if (direction === 'sell' && price >= Number(idea.stop_loss)) return 'Candidate invalidated — price reached the saved sell invalidation/SL before entry.';
+  if (direction === 'buy' && price >= Number(idea.take_profit) && !idea.touched_zone) return 'Candidate expired — upside target liquidity was taken before the pullback entry formed.';
+  if (direction === 'sell' && price <= Number(idea.take_profit) && !idea.touched_zone) return 'Candidate expired — downside target liquidity was taken before the pullback entry formed.';
+  if (Number(idea.rr || 0) < Number(minRr || 2)) return `Candidate invalidated — saved projected R:R is below minimum 1:${minRr}.`;
+  return null;
+}
+
+async function closeSavedCandidate(supabase, idea, now, note, status = 'invalidated_before_entry') {
+  await supabase.from('eve_confluence_trade_ideas').update({
+    status,
+    outcome: status === 'expired' ? 'expired' : 'invalidated_before_entry',
+    completed_at: now.toISOString(),
+    result_r: 0,
+    latest_note: note,
+    updated_at: now.toISOString()
+  }).eq('id', idea.id);
+  await supabase.from('eve_confluence_events').insert({ event_type: status, symbol: idea.symbol, idea_id: idea.id, message: note });
+}
+
+async function saveSnapshotCandidates(supabase, assets, openIdeas, now, candidateMemoryMinutes, cooldownBlocks) {
+  const openKeys = new Set((openIdeas || []).map((i) => ideaKey(i.symbol, i.direction)));
+  const candidates = (assets || [])
+    .filter((a) => a.status === 'candidate' && Number(a.confluence_score || 0) >= MIN_SCORE_FOR_FOCUS)
+    .filter((a) => !cooldownBlocks.has(ideaKey(a.symbol, a.direction)))
+    .filter((a) => !openKeys.has(ideaKey(a.symbol, a.direction)));
+
+  for (const a of candidates) {
+    const expiresAt = addMinutes(now, candidateMemoryMinutes);
+    const payload = {
+      symbol: a.symbol,
+      direction: a.direction,
+      status: 'watch_only',
+      execution_type: 'market_after_confirmation',
+      focus_started_at: now.toISOString(),
+      formed_at: now.toISOString(),
+      lock_until: expiresAt,
+      expires_at: expiresAt,
+      forming_price: a.latest_price,
+      stop_loss: a.stop_loss,
+      take_profit: a.target_price,
+      risk_amount: a.risk_amount,
+      reward_amount: a.reward_amount,
+      rr: a.rr,
+      demand_low: a.demand_low,
+      demand_high: a.demand_high,
+      supply_low: a.supply_low,
+      supply_high: a.supply_high,
+      target_source: a.target_source,
+      sl_reason: a.sl_reason,
+      touched_zone: false,
+      reason: `${a.direction.toUpperCase()} candidate saved. Bias gate opened; waiting for retrace into the correct zone.`,
+      latest_note: 'Candidate memory saved. Bias can cool during pullback; only invalidation rules cancel it.',
+      raw: {
+        ...(a.raw || {}),
+        v11_candidate: {
+          confluence_score: a.confluence_score,
+          bias: a.bias,
+          bias_score: a.bias_score,
+          structure_bias: a.structure_bias,
+          structure_score: a.structure_score,
+          zone_quality: a.zone_quality,
+          liquidity_quality: a.liquidity_quality,
+          planned_entry: a.planned_entry,
+          saved_at: now.toISOString(),
+          memory_minutes: candidateMemoryMinutes
+        }
+      },
+      updated_at: now.toISOString()
+    };
+    const { data, error } = await supabase.from('eve_confluence_trade_ideas').insert(payload).select('*').single();
+    if (!error && data) {
+      await supabase.from('eve_confluence_events').insert({
+        event_type: 'candidate_saved',
+        symbol: a.symbol,
+        idea_id: data.id,
+        message: `${a.symbol} ${a.direction.toUpperCase()} candidate saved from Bias ${Math.round(Number(a.bias_score || 0))}%. Waiting for retrace.`,
+        raw: { confluence_score: a.confluence_score, rr: a.rr }
+      });
+    }
+  }
+}
+
+async function buildAndMaintainMemoryAssets(supabase, openIdeas, inputs, minRr, now) {
+  const rows = [];
+  const marketMap = Object.fromEntries(MARKETS.map((m) => [m.symbol, m]));
+  for (const idea of openIdeas || []) {
+    if (idea.status !== 'watch_only') continue;
+    const market = marketMap[idea.symbol] || { symbol: idea.symbol };
+    const data = {
+      bias: inputs.maps.bias[idea.symbol],
+      zones: inputs.maps.zones[idea.symbol],
+      structure: inputs.maps.structure[idea.symbol],
+      liquidity: inputs.maps.liquidity[idea.symbol],
+      live: inputs.maps.live[idea.symbol]
+    };
+    const price = pickPrice(idea.symbol, data.live, data.bias, data.zones, data.structure, data.liquidity) || num(idea.last_live_price) || num(idea.forming_price);
+    const invalidReason = savedCandidateInvalidation(idea, data, price, minRr);
+    if (invalidReason) {
+      const expired = invalidReason.includes('target liquidity was taken');
+      await closeSavedCandidate(supabase, idea, now, invalidReason, expired ? 'expired' : 'invalidated_before_entry');
+      continue;
+    }
+    const row = savedCandidateAsset(idea, market, data, minRr);
+    rows.push(row);
+    if (row.status === 'candidate') {
+      await supabase.from('eve_confluence_trade_ideas').update({
+        last_live_price: row.latest_price || null,
+        last_live_at: row.latest_price ? now.toISOString() : null,
+        latest_note: row.reason,
+        updated_at: now.toISOString()
+      }).eq('id', idea.id);
+    }
+  }
+  return rows;
+}
+
 async function recentCooldownBlocks(supabase, now, cooldownMinutes) {
   if (!cooldownMinutes || cooldownMinutes <= 0) return new Set();
   const since = addMinutes(now, -cooldownMinutes);
@@ -559,6 +813,7 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   const formingTouchMinutes = await getSetting(supabase, 'forming_touch_minutes', 15);
   const armedConfirmationMinutes = await getSetting(supabase, 'armed_confirmation_minutes', 30);
   const cooldownMinutes = await getSetting(supabase, 'same_symbol_direction_cooldown_minutes', 10);
+  const candidateMemoryMinutes = await getSetting(supabase, 'candidate_memory_minutes', DEFAULT_CANDIDATE_MEMORY_MINUTES);
 
   const { data: run, error: runError } = await supabase.from('eve_confluence_scan_runs').insert({
     started_at: now.toISOString(),
@@ -634,13 +889,23 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
     return { run: { ...run, completed_at: completedAt, mode: 'waiting_fresh_sources' }, selected: null, idea: null, assets: [], inputs };
   }
 
-  const assets = MARKETS.map((market) => buildCandidate(market, {
+  let assets = MARKETS.map((market) => buildCandidate(market, {
     bias: inputs.maps.bias[market.symbol],
     zones: inputs.maps.zones[market.symbol],
     structure: inputs.maps.structure[market.symbol],
     liquidity: inputs.maps.liquidity[market.symbol],
     live: inputs.maps.live[market.symbol]
   }, minRr));
+
+  const cooldownBlocks = await recentCooldownBlocks(supabase, now, cooldownMinutes);
+  const openIdeasBeforeMemory = await getOpenIdeas(supabase);
+  const currentIdeaLocked = currentIdea && ['forming', 'armed', 'active'].includes(currentIdea.status) && !isClosedStatus(currentIdea.status);
+  if (!currentIdeaLocked) {
+    await saveSnapshotCandidates(supabase, assets, openIdeasBeforeMemory, now, candidateMemoryMinutes, cooldownBlocks);
+  }
+  const openIdeasAfterMemory = await getOpenIdeas(supabase);
+  const memoryAssets = await buildAndMaintainMemoryAssets(supabase, openIdeasAfterMemory, inputs, minRr, now);
+  assets = mergeMemoryAssets(assets, memoryAssets);
 
   const scoreRows = assets.map((a, index) => ({
     scan_id: run.id,
@@ -677,7 +942,6 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   if (scoreRows.length) await supabase.from('eve_confluence_asset_scores').insert(scoreRows);
 
   const candidateMap = Object.fromEntries(assets.map((a) => [a.symbol, a]));
-  const cooldownBlocks = await recentCooldownBlocks(supabase, now, cooldownMinutes);
   const ranked = assets
     .filter((a) => !cooldownBlocks.has(`${a.symbol}|${a.direction}`))
     .filter((a) => a.status === 'forming' && Number(a.confluence_score) >= MIN_SCORE_FOR_FOCUS)
@@ -854,7 +1118,7 @@ async function getLatestState(supabase) {
     getCurrentFocus(supabase),
     supabase.from('eve_confluence_live_prices').select('*'),
     supabase.from('eve_confluence_asset_scores').select('*').order('created_at', { ascending: false }).limit(60),
-    supabase.from('eve_confluence_trade_ideas').select('*').order('created_at', { ascending: false }).limit(80),
+    supabase.from('eve_confluence_trade_ideas').select('*').order('created_at', { ascending: false }).limit(120),
     supabase.from('eve_confluence_settings').select('*'),
     getSourceFreshness(supabase, new Date())
   ]);
@@ -886,24 +1150,26 @@ function nextMinuteSlot() {
 
 function performanceStats(ideas) {
   const all = ideas || [];
-  const formed = all.filter((i) => i.status !== 'watch_only');
-  const armed = all.filter((i) => ['armed', 'active', 'won', 'lost'].includes(i.status) || i.touched_zone);
-  const triggered = all.filter((i) => ['active', 'won', 'lost'].includes(i.status));
-  const wins = all.filter((i) => i.status === 'won').length;
-  const losses = all.filter((i) => i.status === 'lost').length;
-  const expiredBeforeTouch = all.filter((i) => i.status === 'expired' && !i.touched_zone).length;
-  const expiredAfterTouch = all.filter((i) => i.status === 'expired' && i.touched_zone).length;
-  const invalidatedBeforeEntry = all.filter((i) => i.status === 'invalidated_before_entry').length;
-  const rrFailed = all.filter((i) => i.status === 'no_trigger').length;
+  const memoryOnlyCandidate = (i) => Boolean(i.raw?.v11_candidate) && !i.touched_zone && !i.entry_price && ['watch_only', 'expired', 'invalidated_before_entry'].includes(i.status);
+  const measurable = all.filter((i) => !memoryOnlyCandidate(i));
+  const formed = measurable.filter((i) => i.status !== 'watch_only');
+  const armed = measurable.filter((i) => ['armed', 'active', 'won', 'lost'].includes(i.status) || i.touched_zone);
+  const triggered = measurable.filter((i) => ['active', 'won', 'lost'].includes(i.status));
+  const wins = measurable.filter((i) => i.status === 'won').length;
+  const losses = measurable.filter((i) => i.status === 'lost').length;
+  const expiredBeforeTouch = measurable.filter((i) => i.status === 'expired' && !i.touched_zone).length;
+  const expiredAfterTouch = measurable.filter((i) => i.status === 'expired' && i.touched_zone).length;
+  const invalidatedBeforeEntry = measurable.filter((i) => i.status === 'invalidated_before_entry').length;
+  const rrFailed = measurable.filter((i) => i.status === 'no_trigger').length;
   const noTrigger = expiredBeforeTouch + expiredAfterTouch + invalidatedBeforeEntry + rrFailed;
   const closedCount = wins + losses;
   const winRate = closedCount ? (wins / closedCount) * 100 : 0;
   const triggerRate = formed.length ? (triggered.length / formed.length) * 100 : 0;
-  const resultRs = all.map((i) => Number(i.result_r)).filter(Number.isFinite);
+  const resultRs = measurable.map((i) => Number(i.result_r)).filter(Number.isFinite);
   const avgR = resultRs.length ? resultRs.reduce((a, b) => a + b, 0) / resultRs.length : 0;
 
   const byAsset = {};
-  for (const i of all) {
+  for (const i of measurable) {
     byAsset[i.symbol] ||= { symbol: i.symbol, total: 0, wins: 0, losses: 0, winRate: 0, avgR: 0, r: [] };
     byAsset[i.symbol].total++;
     if (i.status === 'won') byAsset[i.symbol].wins++;
@@ -918,7 +1184,7 @@ function performanceStats(ideas) {
   }
   const assetRows = Object.values(byAsset).sort((a, b) => b.winRate - a.winRate || b.total - a.total);
 
-  return { totalIdeas: formed.length, armedIdeas: armed.length, triggeredIdeas: triggered.length, wins, losses, noTrigger, expiredBeforeTouch, expiredAfterTouch, invalidatedBeforeEntry, rrFailed, active: all.filter((i) => i.status === 'active').length, winRate, triggerRate, avgR, byAsset: assetRows };
+  return { totalIdeas: formed.length, candidateMemory: all.filter((i) => i.raw?.v11_candidate).length, armedIdeas: armed.length, triggeredIdeas: triggered.length, wins, losses, noTrigger, expiredBeforeTouch, expiredAfterTouch, invalidatedBeforeEntry, rrFailed, active: measurable.filter((i) => i.status === 'active').length, winRate, triggerRate, avgR, byAsset: assetRows };
 }
 
 module.exports = {

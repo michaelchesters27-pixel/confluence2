@@ -374,6 +374,7 @@ function renderStats(perf, ideas) {
   const cards = [
     ['Active win rate', `${Number(perf.winRate || 0).toFixed(1)}%`],
     ['Ideas formed', perf.totalIdeas || 0],
+    ['Saved candidates', perf.candidateMemory || 0],
     ['Armed ideas', perf.armedIdeas || 0],
     ['Triggered ideas', perf.triggeredIdeas || 0],
     ['Wins', perf.wins || 0],
