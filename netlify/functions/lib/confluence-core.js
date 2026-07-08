@@ -2,7 +2,7 @@ const MIN_SCORE_FOR_FOCUS = 50;
 const MIN_BIAS_QUALITY_FOR_TRADE = 70;
 const SOURCE_FRESHNESS_LAG_MINUTES = 4;
 const SOURCE_FRESHNESS_LOOKBACK_MINUTES = 7;
-const DEFAULT_CANDIDATE_MEMORY_MINUTES = 120;
+const DEFAULT_CANDIDATE_MEMORY_MINUTES = 240;
 
 const SOURCE_SCANNERS = [
   { key: 'bias', label: 'Bias', runTable: 'eve_scan_runs', rowTable: 'eve_market_scores' },
@@ -66,6 +66,62 @@ function zoneDistanceAllowance(symbol, price, zoneLow, zoneHigh) {
   const p = Math.abs(Number(price) || 1);
   const pct = symbol === 'BTC/USD' ? p * 0.002 : p * 0.0008;
   return Math.max(h * 1.5, pct, priceBuffer(symbol, p) * 2);
+}
+
+
+function distanceToCorrectZone(symbol, direction, price, low, high) {
+  const p = num(price), l = num(low), h = num(high);
+  if (!p || !l || !h) return { distance: null, text: 'No zone distance available.' };
+  if (direction === 'buy') {
+    if (p >= l && p <= h) return { distance: 0, text: 'Price is inside demand.' };
+    if (p > h) return { distance: p - h, text: `Price is ${formatDistance(symbol, p - h)} above demand.` };
+    return { distance: l - p, text: `Price is ${formatDistance(symbol, l - p)} below demand / through the zone.` };
+  }
+  if (p >= l && p <= h) return { distance: 0, text: 'Price is inside supply.' };
+  if (p < l) return { distance: l - p, text: `Price is ${formatDistance(symbol, l - p)} below supply.` };
+  return { distance: p - h, text: `Price is ${formatDistance(symbol, p - h)} above supply / through the zone.` };
+}
+
+function formatDistance(symbol, value) {
+  const v = Math.abs(Number(value) || 0);
+  if (symbol === 'BTC/USD') return v.toFixed(0);
+  if (symbol === 'XAU/USD') return v.toFixed(2);
+  if (symbol.includes('JPY')) return v.toFixed(3);
+  return v.toFixed(5);
+}
+
+function similarLevel(symbol, a, b, refPrice) {
+  const x = num(a), y = num(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  const tolerance = priceBuffer(symbol, refPrice || x || y) * 1.25;
+  return Math.abs(x - y) <= tolerance;
+}
+
+function similarIdeaToCandidate(idea, candidate) {
+  if (!idea || !candidate) return false;
+  if (idea.symbol !== candidate.symbol || idea.direction !== candidate.direction) return false;
+  const ref = candidate.planned_entry || candidate.latest_price || candidate.target_price;
+  if (!similarLevel(candidate.symbol, idea.take_profit, candidate.target_price, ref)) return false;
+  if (candidate.direction === 'buy') {
+    return similarLevel(candidate.symbol, idea.demand_low, candidate.demand_low, ref)
+      && similarLevel(candidate.symbol, idea.demand_high, candidate.demand_high, ref);
+  }
+  return similarLevel(candidate.symbol, idea.supply_low, candidate.supply_low, ref)
+    && similarLevel(candidate.symbol, idea.supply_high, candidate.supply_high, ref);
+}
+
+async function hasRecentSimilarIdea(supabase, candidate, now, memoryMinutes) {
+  const since = addMinutes(now, -Math.max(Number(memoryMinutes) || DEFAULT_CANDIDATE_MEMORY_MINUTES, DEFAULT_CANDIDATE_MEMORY_MINUTES));
+  const { data, error } = await supabase
+    .from('eve_confluence_trade_ideas')
+    .select('symbol,direction,status,demand_low,demand_high,supply_low,supply_high,take_profit,created_at,completed_at')
+    .eq('symbol', candidate.symbol)
+    .eq('direction', candidate.direction)
+    .gte('created_at', since)
+    .order('created_at', { ascending: false })
+    .limit(40);
+  if (error) return false;
+  return (data || []).some((idea) => similarIdeaToCandidate(idea, candidate));
 }
 
 function classifyBuyZone(price, low, high, symbol) {
@@ -326,6 +382,7 @@ function makeScoredOption({ base, direction, zoneState, plannedEntry, stop, targ
   const reason = status === 'forming'
     ? `${direction.toUpperCase()} idea forming — SL is clean first, projected R:R from the ${area} confirmation area is ${rr.rr.toFixed(2)}, price is ${zoneState.replaceAll('_', ' ')}. Waiting for live confirmation.`
     : `${direction.toUpperCase()} candidate — bias and structure agree, ${area} zone and liquidity target are mapped, projected R:R from the ${area} confirmation area is ${rr.rr.toFixed(2)}. Waiting for price to approach the zone.`;
+  const dz = distanceToCorrectZone(base.symbol, direction, base.latest_price, direction === 'buy' ? base.demand_low : base.supply_low, direction === 'buy' ? base.demand_high : base.supply_high);
 
   return {
     ...base,
@@ -333,6 +390,8 @@ function makeScoredOption({ base, direction, zoneState, plannedEntry, stop, targ
     status,
     confluence_score: score,
     reason,
+    distance_to_zone: dz.distance,
+    distance_to_zone_text: dz.text,
     zone_state: zoneState,
     zone_quality: zoneQuality,
     liquidity_quality: liquidityQuality,
@@ -621,6 +680,7 @@ function savedCandidateAsset(idea, market, data, minRr) {
   const area = idea.direction === 'buy' ? 'demand' : 'supply';
   const waitingReason = `${idea.direction.toUpperCase()} candidate saved — Bias gate opened at ${snapshotText}. Current bias is ${currentBiasText}. Bias may cool during the retrace; candidate stays valid unless bias/structure flips, zone fails, target is taken, or expiry hits. Waiting for pullback into ${area}.`;
   const formingReason = `${idea.direction.toUpperCase()} saved candidate is now ${zoneState.replaceAll('_', ' ')}. Bias snapshot remains valid. Waiting for live ${idea.direction === 'buy' ? 'demand reclaim' : 'supply rejection'} confirmation.`;
+  const dz = distanceToCorrectZone(idea.symbol, idea.direction, price, idea.direction === 'buy' ? idea.demand_low : idea.supply_low, idea.direction === 'buy' ? idea.demand_high : idea.supply_high);
 
   return {
     symbol: idea.symbol,
@@ -640,6 +700,8 @@ function savedCandidateAsset(idea, market, data, minRr) {
     status,
     confluence_score: score,
     reason: status === 'forming' ? formingReason : waitingReason,
+    distance_to_zone: dz.distance,
+    distance_to_zone_text: dz.text,
     stop_loss: num(idea.stop_loss),
     target_price: num(idea.take_profit),
     risk_amount: num(idea.risk_amount),
@@ -652,7 +714,7 @@ function savedCandidateAsset(idea, market, data, minRr) {
     sl_reason: idea.sl_reason,
     planned_entry: idea.direction === 'buy' ? num(idea.demand_high) : num(idea.supply_low),
     memory_idea_id: idea.id,
-    memory_formed_at: idea.formed_at || idea.created_at,
+    memory_formed_at: idea.formed_at || null,
     raw: { ...(idea.raw || {}), memory_idea_id: idea.id, memory_status: idea.status, current_bias: bias || null, current_structure: structure || null, current_zone_state: zoneState }
   };
 }
@@ -705,6 +767,9 @@ async function saveSnapshotCandidates(supabase, assets, openIdeas, now, candidat
     .filter((a) => !openKeys.has(ideaKey(a.symbol, a.direction)));
 
   for (const a of candidates) {
+    if (await hasRecentSimilarIdea(supabase, a, now, candidateMemoryMinutes)) {
+      continue;
+    }
     const expiresAt = addMinutes(now, candidateMemoryMinutes);
     const payload = {
       symbol: a.symbol,
@@ -712,7 +777,7 @@ async function saveSnapshotCandidates(supabase, assets, openIdeas, now, candidat
       status: 'watch_only',
       execution_type: 'market_after_confirmation',
       focus_started_at: now.toISOString(),
-      formed_at: now.toISOString(),
+      formed_at: null,
       lock_until: expiresAt,
       expires_at: expiresAt,
       forming_price: a.latest_price,
@@ -733,6 +798,7 @@ async function saveSnapshotCandidates(supabase, assets, openIdeas, now, candidat
       raw: {
         ...(a.raw || {}),
         v11_candidate: {
+          version: 'v12_cleanup',
           confluence_score: a.confluence_score,
           bias: a.bias,
           bias_score: a.bias_score,
@@ -937,7 +1003,7 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
     zone_state: a.zone_state,
     target_source: a.target_source,
     sl_reason: a.sl_reason,
-    raw: { ...(a.raw || {}), confluence: { planned_entry: a.planned_entry || null, source_freshness: inputs.source_freshness || null } }
+    raw: { ...(a.raw || {}), confluence: { planned_entry: a.planned_entry || null, distance_to_zone: a.distance_to_zone ?? null, distance_to_zone_text: a.distance_to_zone_text || null, source_freshness: inputs.source_freshness || null } }
   }));
   if (scoreRows.length) await supabase.from('eve_confluence_asset_scores').insert(scoreRows);
 
@@ -1150,26 +1216,31 @@ function nextMinuteSlot() {
 
 function performanceStats(ideas) {
   const all = ideas || [];
-  const memoryOnlyCandidate = (i) => Boolean(i.raw?.v11_candidate) && !i.touched_zone && !i.entry_price && ['watch_only', 'expired', 'invalidated_before_entry'].includes(i.status);
-  const measurable = all.filter((i) => !memoryOnlyCandidate(i));
-  const formed = measurable.filter((i) => i.status !== 'watch_only');
-  const armed = measurable.filter((i) => ['armed', 'active', 'won', 'lost'].includes(i.status) || i.touched_zone);
-  const triggered = measurable.filter((i) => ['active', 'won', 'lost'].includes(i.status));
-  const wins = measurable.filter((i) => i.status === 'won').length;
-  const losses = measurable.filter((i) => i.status === 'lost').length;
-  const expiredBeforeTouch = measurable.filter((i) => i.status === 'expired' && !i.touched_zone).length;
-  const expiredAfterTouch = measurable.filter((i) => i.status === 'expired' && i.touched_zone).length;
-  const invalidatedBeforeEntry = measurable.filter((i) => i.status === 'invalidated_before_entry').length;
-  const rrFailed = measurable.filter((i) => i.status === 'no_trigger').length;
+
+  // v12: saved candidates are not counted as formed trade ideas until
+  // price actually reaches/approaches the correct zone and the idea is
+  // promoted from WATCH ONLY to FORMING/ARMED/ACTIVE. However, closed
+  // candidates still count inside the reason buckets so the stats are honest.
+  const isSavedCandidateOnly = (i) => Boolean(i.raw?.v11_candidate) && !i.formed_at && !i.touched_zone && !i.entry_price;
+  const formed = all.filter((i) => !isSavedCandidateOnly(i) && i.status !== 'watch_only');
+  const armed = all.filter((i) => ['armed', 'active', 'won', 'lost'].includes(i.status) || i.touched_zone);
+  const triggered = all.filter((i) => ['active', 'won', 'lost'].includes(i.status));
+  const wins = all.filter((i) => i.status === 'won').length;
+  const losses = all.filter((i) => i.status === 'lost').length;
+  const expiredBeforeTouch = all.filter((i) => i.status === 'expired' && !i.touched_zone).length;
+  const expiredAfterTouch = all.filter((i) => i.status === 'expired' && i.touched_zone).length;
+  const invalidatedBeforeEntry = all.filter((i) => i.status === 'invalidated_before_entry').length;
+  const rrFailed = all.filter((i) => i.status === 'no_trigger').length;
   const noTrigger = expiredBeforeTouch + expiredAfterTouch + invalidatedBeforeEntry + rrFailed;
   const closedCount = wins + losses;
   const winRate = closedCount ? (wins / closedCount) * 100 : 0;
   const triggerRate = formed.length ? (triggered.length / formed.length) * 100 : 0;
-  const resultRs = measurable.map((i) => Number(i.result_r)).filter(Number.isFinite);
+  const resultRs = all.map((i) => Number(i.result_r)).filter(Number.isFinite);
   const avgR = resultRs.length ? resultRs.reduce((a, b) => a + b, 0) / resultRs.length : 0;
 
   const byAsset = {};
-  for (const i of measurable) {
+  for (const i of all) {
+    if (isSavedCandidateOnly(i) && i.status === 'watch_only') continue;
     byAsset[i.symbol] ||= { symbol: i.symbol, total: 0, wins: 0, losses: 0, winRate: 0, avgR: 0, r: [] };
     byAsset[i.symbol].total++;
     if (i.status === 'won') byAsset[i.symbol].wins++;
@@ -1184,7 +1255,25 @@ function performanceStats(ideas) {
   }
   const assetRows = Object.values(byAsset).sort((a, b) => b.winRate - a.winRate || b.total - a.total);
 
-  return { totalIdeas: formed.length, candidateMemory: all.filter((i) => i.raw?.v11_candidate).length, armedIdeas: armed.length, triggeredIdeas: triggered.length, wins, losses, noTrigger, expiredBeforeTouch, expiredAfterTouch, invalidatedBeforeEntry, rrFailed, active: measurable.filter((i) => i.status === 'active').length, winRate, triggerRate, avgR, byAsset: assetRows };
+  return {
+    totalIdeas: formed.length,
+    candidateMemory: all.filter((i) => i.raw?.v11_candidate).length,
+    savedCandidatesOpen: all.filter((i) => i.status === 'watch_only').length,
+    armedIdeas: armed.length,
+    triggeredIdeas: triggered.length,
+    wins,
+    losses,
+    noTrigger,
+    expiredBeforeTouch,
+    expiredAfterTouch,
+    invalidatedBeforeEntry,
+    rrFailed,
+    active: all.filter((i) => i.status === 'active').length,
+    winRate,
+    triggerRate,
+    avgR,
+    byAsset: assetRows
+  };
 }
 
 module.exports = {

@@ -38,3 +38,14 @@ Railway settings remain:
 
 No new Netlify variables are required.
 No Supabase SQL patch is required for v9.
+
+## v12 cleanup
+
+This build tightens the v11 Candidate Memory Engine:
+- 4-hour candidate memory by default.
+- Stronger duplicate candidate prevention.
+- WATCH ONLY candidates no longer count as formed ideas.
+- Invalid before entry stats now count correctly.
+- Candidate cards show distance to the zone.
+
+Run `supabase/v12-confluence-cleanup-patch.sql` if this is an existing Supabase install.

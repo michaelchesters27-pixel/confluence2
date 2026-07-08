@@ -21,7 +21,7 @@ alter table public.eve_confluence_trade_ideas
 
 insert into public.eve_confluence_settings (key, value, updated_at, changed_by)
 values
-  ('candidate_memory_minutes', '120'::jsonb, now(), 'v11_candidate_memory'),
+  ('candidate_memory_minutes', '240'::jsonb, now(), 'v11_candidate_memory'),
   ('minimum_rr', '2'::jsonb, now(), 'v11_candidate_memory')
 on conflict (key) do nothing;
 

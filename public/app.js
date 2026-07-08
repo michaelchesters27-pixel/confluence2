@@ -304,6 +304,7 @@ function renderGrid(assets) {
         <div class="market-symbol">${escapeHtml(m.symbol)}</div>
         <div class="bias-pill ${statusClass(m.status, m.direction)}">${escapeHtml(String(m.direction || 'none').toUpperCase())}</div>
         <div class="price-row">Latest: <strong>${formatPrice(m.latest_price, m.symbol)}</strong></div>
+        ${m.raw?.confluence?.distance_to_zone_text ? `<div class="price-row">Zone distance: <strong>${escapeHtml(m.raw.confluence.distance_to_zone_text)}</strong></div>` : ''}
         <div class="mini-plan">
           <div><span>SL first</span><strong>${formatPrice(m.stop_loss, m.symbol)}</strong></div>
           <div><span>TP</span><strong>${formatPrice(m.target_price, m.symbol)}</strong></div>

@@ -1,0 +1,16 @@
+EVE Confluence v12 cleanup
+
+Built from v11 Candidate Memory Engine.
+
+Changes:
+1. Candidate memory default extended from 120 minutes to 240 minutes.
+2. Saved WATCH ONLY candidates no longer set formed_at. formed_at now only applies when price actually reaches/approaches the zone and the idea promotes to FORMING/ARMED.
+3. Stronger duplicate prevention: skips new candidate if the same symbol + direction + similar zone + similar target already existed during the candidate memory window.
+4. Performance stats now count INVALIDATED BEFORE ENTRY properly, including saved candidates that invalidated before they ever formed.
+5. Total Ideas / Ideas Formed now only counts ideas that actually formed, not every saved candidate.
+6. Market cards include distance-to-zone text in raw confluence data and display it on the board.
+7. Included Supabase patch: supabase/v12-confluence-cleanup-patch.sql
+
+No source scanner changes.
+No Railway server code changes.
+No change to Bias, Structure, Zones, or Liquidity.
