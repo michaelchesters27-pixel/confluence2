@@ -1,0 +1,19 @@
+EVE v13 is not a repair of the old Confluence filters.
+It is a new Trade Idea Engine built inside the existing Confluence GitHub structure.
+
+LOCKED STRATEGY
+- BUY pullback: bullish Bias + demand entry + completed M5 rejection + target above.
+- SELL pullback: bearish Bias + supply entry + completed M5 rejection + target below.
+- BUY breakout: bullish Bias + bullish BOS + retest holds + target above.
+- SELL breakout: bearish Bias + bearish BOS + retest holds + target below.
+
+LOCKED WINDOWS
+- London: 08:15-11:00 Europe/London.
+- New York: 08:30-11:00 America/New_York.
+- Existing ideas continue after the window closes.
+
+NO RAILWAY
+- No WebSocket.
+- No Railway folder.
+- No Railway environment variable.
+- Decisions and tracking use completed five-minute scanner prices from Supabase.

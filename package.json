@@ -1,11 +1,12 @@
 {
-  "name": "eve-confluence-machine",
-  "version": "1.0.0",
+  "name": "eve-trade-idea-engine",
+  "version": "13.0.0",
   "private": true,
-  "description": "EVE Confluence - one-asset trade focus engine",
+  "description": "EVE Trade Idea Engine using Bias, Zones, Structure and Liquidity scanner results",
   "scripts": {
-    "build": "echo 'EVE Confluence static build ready'",
-    "dev": "netlify dev"
+    "build": "echo 'EVE Trade Idea Engine static build ready'",
+    "dev": "netlify dev",
+    "test": "node tests/engine-smoke.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4"

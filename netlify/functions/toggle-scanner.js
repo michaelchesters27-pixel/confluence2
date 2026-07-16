@@ -17,21 +17,31 @@ exports.handler = async function(event) {
       changed_by: 'admin'
     });
     if (error) throw error;
+
     if (!enabled) {
+      await supabase
+        .from('eve_confluence_trade_ideas')
+        .update({
+          status: 'cancelled',
+          outcome: 'cancelled',
+          completed_at: now,
+          latest_note: 'Cancelled because the Trade Idea Engine was turned off.',
+          updated_at: now
+        })
+        .in('status', ['forming', 'armed', 'active']);
+
       await supabase.from('eve_confluence_current_focus').upsert({
         id: 'current',
         symbol: null,
         direction: null,
-        status: 'confluence_off',
+        status: 'engine_off',
         idea_id: null,
         confluence_score: 0,
-        reason: 'Confluence scanner is turned off.',
+        reason: 'Trade Idea Engine is turned off.',
         locked_at: null,
         lock_until: null,
         last_live_price: null,
         last_live_at: null,
-        railway_symbol: null,
-        railway_status: 'no_focus',
         raw: {},
         updated_at: now
       });
@@ -39,6 +49,6 @@ exports.handler = async function(event) {
     return ok({ scanner_enabled: enabled });
   } catch (err) {
     console.error(err);
-    return bad(err.statusCode || 500, err.message || 'Could not toggle scanner');
+    return bad(err.statusCode || 500, err.message || 'Could not toggle Trade Idea Engine');
   }
 };

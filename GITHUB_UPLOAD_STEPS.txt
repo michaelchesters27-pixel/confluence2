@@ -1,15 +1,27 @@
-EVE CONFLUENCE - GITHUB UPLOAD STEPS
+EVE TRADE IDEA ENGINE v13 - COMPLETE GITHUB DELIVERY
 
-1. Unzip this folder on your laptop.
+1. Download the complete ZIP.
+2. Open GitHub.
+3. Open the existing repository: confluence2
+4. Delete the old repository files.
+5. Upload every file and folder from this ZIP.
+6. Commit the changes.
+7. Netlify will deploy automatically.
 
-2. Go to GitHub.
+SUPABASE - ONE COMPLETE SQL FILE
+Open Supabase SQL Editor and run:
 
-3. Create a new repository.
-   Suggested name:
-   eve-confluence-machine
+supabase/EVE_FULL_SUPABASE_SETUP.sql
 
-4. Upload ALL files from this folder into the GitHub repo.
+This one file handles both the existing Confluence installation and a fresh installation.
+There are no patch files in this project.
 
-5. Commit the files.
+NETLIFY VARIABLES TO KEEP
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+EVE_ADMIN_PASSWORD
 
-Do not put any API keys into GitHub.
+OLD VARIABLE TO DELETE
+RAILWAY_PUBLIC_URL
+
+Railway is not used. Disable or delete the old Railway service.

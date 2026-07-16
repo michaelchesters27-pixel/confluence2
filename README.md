@@ -1,51 +1,83 @@
-# EVE Confluence v9 - Fresh Source Gate + Candidate Logic
+# EVE Trade Idea Engine v13
 
-This version is built from the deployed v8 admin-password-gate file.
+This is the **complete GitHub-ready project** built from the existing EVE Confluence repository structure. Replace the contents of the existing `confluence2` repository with this project.
 
-## Main changes
+There are **no patch files** and no separate partial code deliveries.
 
-- Confluence scheduled scan runs every minute.
-- The four backbone scanner freshness boxes are shown at the top:
-  - Bias
-  - Structure
-  - Zones
-  - Liquidity
-- Confluence only makes a new trade decision when all four source scanners have a real completed scan for the current source cycle.
-- Confluence ignores skipped/recent/starting/failed source scan runs.
-- Candidate logic added:
-  - Candidate = valid setup exists, but price is not close enough to the zone yet. No WebSocket focus.
-  - Forming = price is near/inside the correct zone. Focus locks and Railway can watch live price.
-  - Armed = zone touched, waiting live confirmation.
-  - Active = confirmation happened; entry/SL/TP/R:R locked.
-- Bias gatekeeper tightened:
-  - Bias must be at least 70%.
-  - Watch Only bias is rejected.
-- R:R is projected from the correct zone/confirmation area instead of blindly from random current price.
-- Small sound alerts added:
-  - forming
-  - armed
-  - active
-- Existing small Admin button/password gate preserved.
-- Existing 9-asset list preserved.
+## Strategy
 
-## Deployment
+EVE checks two trade setups across all 12 markets:
 
-Upload all files to the GitHub repo currently connected to Netlify/Railway: `confluence2`.
+1. **Pullback** into demand or supply in the Bias direction.
+2. **Breakout and retest** after a Bias-aligned BOS.
 
-Railway settings remain:
-- Root directory: `railway`
-- Start command: `npm start`
+The four existing scanners have clear jobs:
 
-No new Netlify variables are required.
-No Supabase SQL patch is required for v9.
+- Bias chooses BUY or SELL direction.
+- Zones provide pullback entry areas.
+- Structure provides breakout/retest setups and supports confirmation.
+- Liquidity provides the take-profit target.
 
-## v12 cleanup
+No single optional scanner is allowed to silently veto every setup.
 
-This build tightens the v11 Candidate Memory Engine:
-- 4-hour candidate memory by default.
-- Stronger duplicate candidate prevention.
-- WATCH ONLY candidates no longer count as formed ideas.
-- Invalid before entry stats now count correctly.
-- Candidate cards show distance to the zone.
+## Idea windows
 
-Run `supabase/v12-confluence-cleanup-patch.sql` if this is an existing Supabase install.
+### London
+
+- 08:15 to 11:00
+- `Europe/London`
+- Automatically handles GMT and BST.
+
+### New York
+
+- 08:30 to 11:00 New York local time
+- `America/New_York`
+- Automatically handles US and UK clock changes.
+
+No new ideas are created outside these windows. Existing forming, armed or active ideas continue being followed every five minutes until finished.
+
+## Risk rules
+
+- Planned idea: minimum 1:2 R:R.
+- Confirmed M5 market entry: minimum 1:1.5 R:R.
+- Below 1:1.5 after confirmation: **DO NOT CHASE**.
+- Only one strongest idea is followed at a time.
+
+## Railway
+
+Railway and WebSockets are removed completely. EVE uses completed five-minute scanner data stored in Supabase.
+
+## Complete Supabase setup
+
+Run the one complete file included in this project:
+
+`supabase/EVE_FULL_SUPABASE_SETUP.sql`
+
+It handles both:
+
+- upgrading the existing EVE Confluence tables; and
+- creating the tables for a fresh installation.
+
+It does not modify the Bias, Zones, Structure or Liquidity scanner tables.
+
+## Netlify variables
+
+Keep:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `EVE_ADMIN_PASSWORD`
+
+Delete:
+
+- `RAILWAY_PUBLIC_URL`
+
+## GitHub deployment
+
+1. Open the existing `confluence2` repository.
+2. Delete the old files.
+3. Upload every file and folder from this complete project.
+4. Commit the changes.
+5. Let Netlify deploy automatically.
+6. Run `supabase/EVE_FULL_SUPABASE_SETUP.sql` in Supabase SQL Editor.
+7. Disable or delete the old Railway service.

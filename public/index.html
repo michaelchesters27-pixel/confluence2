@@ -3,166 +3,138 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>EVE Confluence - One Asset Trade Focus Engine</title>
+  <meta name="theme-color" content="#07120f" />
+  <title>EVE Trade Idea Engine</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <div class="noise"></div>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
   <main class="shell">
-    <header class="topbar">
+    <header class="hero">
       <div>
-        <div class="eyebrow">One-Asset Trade Focus Engine</div>
+        <div class="eyebrow">Completed M5 decision engine</div>
         <h1>EVE</h1>
-        <p class="subline">Bias + Structure + Zones + Liquidity + SL first + minimum 1:2 R:R</p>
+        <p class="hero-copy">Bias chooses direction. Zones find pullbacks. Structure finds breakout retests. Liquidity gives the target.</p>
       </div>
-      <div class="status-panel">
-        <div class="status-row"><span>Confluence</span><strong id="scannerState">Loading</strong></div>
-        <div class="status-row"><span>Railway WS</span><strong id="railwayState">Waiting</strong></div>
-        <div class="status-row"><span>UK Time</span><strong id="ukClock">--:--</strong></div>
+      <div class="status-stack">
+        <div class="status-row"><span>Engine</span><strong id="engineState">Loading</strong></div>
+        <div class="status-row"><span>Idea Window</span><strong id="sessionState">Checking</strong></div>
+        <div class="status-row"><span>London Time</span><strong id="ukClock">--:--</strong></div>
         <div class="status-row"><span>Next Scan</span><strong id="nextScan">--:--</strong></div>
-        <button id="soundBtn" class="sound-toggle" type="button">Sound Alerts: Off</button>
       </div>
     </header>
 
-    <section class="source-freshness" id="sourceFreshness">
-      <div class="fresh-head">
+    <section class="session-strip" id="sessionStrip">
+      <div>
+        <span class="section-kicker">High-volume windows</span>
+        <strong id="sessionHeadline">Checking current session</strong>
+        <p id="sessionNote">London 08:15–11:00. New York 08:30–11:00 local New York time.</p>
+      </div>
+      <div class="next-window">
+        <span>Next window</span>
+        <strong id="nextWindow">--</strong>
+      </div>
+    </section>
+
+    <section class="source-section">
+      <div class="section-heading">
         <div>
-          <span>Backbone Scanner Freshness</span>
-          <strong id="freshSummary">Waiting for source checks</strong>
+          <span class="section-kicker">Scanner inputs</span>
+          <h2>Four engines, separate jobs</h2>
         </div>
-        <small id="freshCycle">Cycle --:-- to --:--</small>
+        <small id="freshSummary">Waiting for source data</small>
       </div>
-      <div class="fresh-grid">
-        <article class="fresh-card waiting" id="freshBias"><span>Bias</span><strong>Waiting</strong><small>--</small></article>
-        <article class="fresh-card waiting" id="freshStructure"><span>Structure</span><strong>Waiting</strong><small>--</small></article>
-        <article class="fresh-card waiting" id="freshZones"><span>Zones</span><strong>Waiting</strong><small>--</small></article>
-        <article class="fresh-card waiting" id="freshLiquidity"><span>Liquidity</span><strong>Waiting</strong><small>--</small></article>
+      <div class="source-grid">
+        <article class="source-card waiting" id="sourceBias"><span>Bias</span><strong>Waiting</strong><small>Direction</small></article>
+        <article class="source-card waiting" id="sourceZones"><span>Zones</span><strong>Waiting</strong><small>Pullback entry</small></article>
+        <article class="source-card waiting" id="sourceStructure"><span>Structure</span><strong>Waiting</strong><small>Breakout / retest</small></article>
+        <article class="source-card waiting" id="sourceLiquidity"><span>Liquidity</span><strong>Waiting</strong><small>Take-profit target</small></article>
       </div>
     </section>
 
-    <section class="hero-grid">
-      <div class="eve-core-card">
-        <div class="core-orbit">
-          <div class="ring ring-1"></div>
-          <div class="ring ring-2"></div>
-          <div class="ring ring-3"></div>
-          <div class="scan-line"></div>
-          <div class="core-dot"><span>EVE</span><small id="coreStatus">FOCUS</small></div>
+    <section class="idea-panel" id="ideaPanel">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Strongest opportunity</span>
+          <h2 id="ideaTitle">Waiting for first scan</h2>
         </div>
-        <div class="core-copy">
-          <p id="lastScan">Last scan: waiting</p>
-          <p id="lockInfo">Focus lock: waiting</p>
+        <div class="idea-badges">
+          <span class="badge" id="ideaStatus">WAITING</span>
+          <span class="badge ghost" id="ideaStrategy">--</span>
         </div>
       </div>
 
-      <div class="focus-card" id="focusCard">
-        <div class="card-head">
-          <span>EVE'S LIVE FOCUS</span>
-          <button id="refreshBtn" class="ghost-btn">Refresh</button>
+      <div class="idea-layout">
+        <div class="idea-call">
+          <div class="trade-command" id="tradeCommand">WAIT</div>
+          <p id="ideaReason">EVE will only create new ideas inside the London or New York window.</p>
         </div>
-        <div id="focusEmpty" class="empty-state">Waiting for EVE Confluence...</div>
-        <div id="focusContent" class="hidden">
-          <div class="focus-row">
-            <div>
-              <div class="top-symbol" id="focusSymbol">--</div>
-              <div class="bias-pill bias-mixed" id="focusDirection">--</div>
-            </div>
-            <div class="score-wrap vertical-score">
-              <div class="score-number"><span id="focusScore">0</span><small>%</small></div>
-              <div class="score-label">Confluence</div>
-            </div>
-          </div>
-          <p class="reason" id="focusReason">--</p>
-          <div class="live-price-box">
-            <span>Live price</span>
-            <strong id="livePrice">--</strong>
-            <small id="livePriceAt">Waiting for Railway</small>
-          </div>
+        <div class="plan-grid">
+          <div><span>Planned Entry</span><strong id="plannedEntry">--</strong></div>
+          <div><span>Current / Entry</span><strong id="currentEntry">--</strong></div>
+          <div><span>Stop Loss</span><strong id="stopLoss">--</strong></div>
+          <div><span>Take Profit</span><strong id="takeProfit">--</strong></div>
+          <div><span>R:R</span><strong id="ideaRr">--</strong></div>
+          <div><span>Idea Score</span><strong id="ideaScore">--</strong></div>
+          <div><span>Session</span><strong id="ideaSession">--</strong></div>
+          <div><span>Strategy</span><strong id="ideaStrategyText">--</strong></div>
         </div>
-      </div>
-
-    </section>
-
-    <section class="trade-plan-grid">
-      <article class="plan-card sl-first" id="slCard">
-        <span>SL FIRST</span>
-        <strong id="planSL">--</strong>
-        <small id="planSLReason">No SL = no trade idea</small>
-      </article>
-      <article class="plan-card" id="entryCard">
-        <span>Entry</span>
-        <strong id="planEntry">--</strong>
-        <small id="planEntryReason">Only after confirmation</small>
-      </article>
-      <article class="plan-card" id="tpCard">
-        <span>TP / Liquidity Target</span>
-        <strong id="planTP">--</strong>
-        <small id="planTargetSource">Waiting</small>
-      </article>
-      <article class="plan-card" id="rrCard">
-        <span>Risk : Reward</span>
-        <strong id="planRR">--</strong>
-        <small>Minimum required 1:2</small>
-      </article>
-    </section>
-
-    <section class="idea-card" id="ideaCard">
-      <div class="section-title compact">
-        <h2>Trade Idea</h2>
-        <span id="ideaStatus" class="status-chip">Waiting</span>
-      </div>
-      <div class="idea-body" id="ideaBody">
-        EVE will only give a trade idea after the stop loss is clean, the target is meaningful, and the R:R is at least 1:2.
       </div>
     </section>
 
-    <section class="market-stage">
-      <div class="section-title">
-        <h2>Confluence Board</h2>
+    <section class="opportunities-section">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">All 12 markets</span>
+          <h2>Current opportunities</h2>
+        </div>
+        <small>Only the strongest qualifying setup becomes the live idea.</small>
       </div>
-      <div class="market-grid" id="marketGrid"></div>
+      <div id="marketGrid" class="market-grid">
+        <div class="empty-state">Waiting for results.</div>
+      </div>
+    </section>
+
+    <section class="performance-strip">
+      <div><span>Total ideas</span><strong id="statIdeas">0</strong></div>
+      <div><span>Wins</span><strong id="statWins">0</strong></div>
+      <div><span>Losses</span><strong id="statLosses">0</strong></div>
+      <div><span>Win rate</span><strong id="statWinRate">0%</strong></div>
+      <div><span>Average R</span><strong id="statAvgR">0.00R</strong></div>
+      <button id="performanceBtn" type="button">Performance History</button>
     </section>
   </main>
 
+  <button id="adminFab" class="admin-fab" type="button" aria-expanded="false">Admin</button>
 
-  <button id="adminFab" class="admin-fab" aria-controls="adminModal" aria-expanded="false">Admin</button>
-
-  <div id="adminModal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-label="EVE Admin Control">
-    <div class="admin-panel">
-      <div class="section-title compact">
-        <h2>Admin</h2>
-        <button id="closeAdminBtn" class="ghost-btn">Close</button>
+  <div id="adminModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
+    <div class="modal-card small-modal">
+      <div class="modal-head">
+        <div><span class="section-kicker">Controls</span><h2 id="adminTitle">EVE Admin</h2></div>
+        <button class="icon-btn" id="closeAdmin" type="button">×</button>
       </div>
-      <p class="admin-note">Enter the admin password when you press Admin. Controls stay hidden until the password is accepted.</p>
-      <button id="statsBtn" class="control-btn stats">Idea Stats</button>
-      <button id="manualScanBtn" class="control-btn secondary">Scan Now</button>
-      <button id="unlockBtn" class="control-btn secondary">Unlock Focus</button>
-      <button id="toggleBtn" class="control-btn danger">Turn Confluence Off</button>
-      <button id="passwordBtn" class="text-btn">Re-enter Admin Password</button>
+      <div class="admin-actions">
+        <button id="scanNowBtn" type="button">Scan Now</button>
+        <button id="toggleEngineBtn" type="button">Turn Engine Off</button>
+        <button id="clearIdeaBtn" class="danger" type="button">Cancel Current Idea</button>
+      </div>
+      <p class="modal-note">Scan Now still obeys the London and New York idea windows. Existing ideas continue to be monitored outside the windows.</p>
     </div>
   </div>
 
-  <div id="statsModal" class="modal hidden">
-    <div class="modal-card">
-      <div class="section-title compact">
-        <h2>Trade Idea Performance</h2>
-        <button id="closeStatsBtn" class="ghost-btn">Close</button>
+  <div id="performanceModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="performanceTitle">
+    <div class="modal-card performance-modal-card">
+      <div class="modal-head">
+        <div><span class="section-kicker">Results</span><h2 id="performanceTitle">Performance History</h2></div>
+        <button class="icon-btn" id="closePerformance" type="button">×</button>
       </div>
-      <div class="stats-grid" id="statsGrid"></div>
-      <div class="table-wrap stats-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th><th>Asset</th><th>Dir</th><th>Status</th><th>Entry</th><th>SL</th><th>TP</th><th>R</th>
-            </tr>
-          </thead>
-          <tbody id="ideaHistoryBody"><tr><td colspan="8">Loading...</td></tr></tbody>
-        </table>
-      </div>
+      <div id="performanceBody" class="performance-body">Loading performance.</div>
     </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js" defer></script>
 </body>
 </html>

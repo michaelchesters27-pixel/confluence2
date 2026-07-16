@@ -7,4 +7,4 @@
   node_bundler = "esbuild"
 
 [functions."eve-confluence-scan"]
-  schedule = "* * * * *"
+  schedule = "*/5 * * * *"

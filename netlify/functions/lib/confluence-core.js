@@ -1,8 +1,9 @@
-const MIN_SCORE_FOR_FOCUS = 50;
-const MIN_BIAS_QUALITY_FOR_TRADE = 70;
-const SOURCE_FRESHNESS_LAG_MINUTES = 4;
-const SOURCE_FRESHNESS_LOOKBACK_MINUTES = 7;
-const DEFAULT_CANDIDATE_MEMORY_MINUTES = 240;
+const MIN_DIRECTIONAL_BIAS = 48;
+const DEFAULT_MIN_IDEA_SCORE = 60;
+const DEFAULT_SOURCE_MAX_AGE_MINUTES = 20;
+const DEFAULT_IDEA_EXPIRY_MINUTES = 120;
+const DEFAULT_ACTIVE_EXPIRY_MINUTES = 360;
+const DEFAULT_COOLDOWN_MINUTES = 20;
 
 const SOURCE_SCANNERS = [
   { key: 'bias', label: 'Bias', runTable: 'eve_scan_runs', rowTable: 'eve_market_scores' },
@@ -13,6 +14,7 @@ const SOURCE_SCANNERS = [
 
 const MARKETS = [
   { symbol: 'XAU/USD', display_name: 'Gold', asset_class: 'metal' },
+  { symbol: 'XAG/USD', display_name: 'Silver', asset_class: 'metal' },
   { symbol: 'EUR/USD', display_name: 'Euro / Dollar', asset_class: 'forex' },
   { symbol: 'GBP/USD', display_name: 'Pound / Dollar', asset_class: 'forex' },
   { symbol: 'USD/JPY', display_name: 'Dollar / Yen', asset_class: 'forex' },
@@ -20,166 +22,890 @@ const MARKETS = [
   { symbol: 'USD/CAD', display_name: 'Dollar / Cad', asset_class: 'forex' },
   { symbol: 'EUR/JPY', display_name: 'Euro / Yen', asset_class: 'forex' },
   { symbol: 'GBP/JPY', display_name: 'Pound / Yen', asset_class: 'forex' },
-  { symbol: 'BTC/USD', display_name: 'Bitcoin', asset_class: 'crypto' }
+  { symbol: 'BTC/USD', display_name: 'Bitcoin', asset_class: 'crypto' },
+  { symbol: 'ETH/USD', display_name: 'Ethereum', asset_class: 'crypto' },
+  { symbol: 'SOL/USD', display_name: 'Solana', asset_class: 'crypto' }
 ];
 
-function nowIso() { return new Date().toISOString(); }
-function addMinutes(date, minutes) { return new Date(date.getTime() + minutes * 60_000).toISOString(); }
-function num(value) { const n = Number(value); return Number.isFinite(n) ? n : null; }
-function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-function lower(value) { return String(value || '').toLowerCase(); }
-function displayedPercent(value) { return Math.round(clamp(Number(value) || 0, 0, 100)); }
-function withProgress(obj, progress) { return { ...obj, confluence_score: Math.max(Number(obj.confluence_score || 0), progress) }; }
-function isBullish(value) { const v = lower(value); return v.includes('bull') || v === 'buy'; }
-function isBearish(value) { const v = lower(value); return v.includes('bear') || v === 'sell'; }
-function isClosedStatus(status) { return ['won', 'lost', 'no_trigger', 'invalidated_before_entry', 'expired', 'cancelled'].includes(status); }
-function isOpenIdeaStatus(status) { return ['watch_only', 'forming', 'armed', 'active'].includes(status); }
-
-function marketClosed(symbol, assetClass) {
-  if (assetClass === 'crypto') return false;
-  const now = new Date();
-  const day = now.getUTCDay();
-  const hour = now.getUTCHours();
-  if (day === 6) return true;
-  if (day === 0 && hour < 21) return true;
-  if (day === 5 && hour >= 22) return true;
-  return false;
+function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
+
+function lower(value) { return String(value || '').toLowerCase(); }
+function clamp(value, min, max) { return Math.max(min, Math.min(max, Number(value) || 0)); }
+function round(value, decimals = 2) {
+  const p = 10 ** decimals;
+  return Math.round((Number(value) + Number.EPSILON) * p) / p;
+}
+function nowIso() { return new Date().toISOString(); }
+function addMinutes(date, minutes) { return new Date(date.getTime() + Number(minutes) * 60_000).toISOString(); }
+function minutesBetween(a, b) { return Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 60_000; }
+function isBullish(value) {
+  const v = lower(value);
+  return v.includes('bull') || v === 'buy' || v === 'up';
+}
+function isBearish(value) {
+  const v = lower(value);
+  return v.includes('bear') || v === 'sell' || v === 'down';
+}
+function directionFromBias(value) {
+  if (isBullish(value)) return 'buy';
+  if (isBearish(value)) return 'sell';
+  return null;
+}
+function isClosedStatus(status) {
+  return ['won', 'lost', 'no_trigger', 'invalidated_before_entry', 'expired', 'cancelled'].includes(status);
+}
+function isOpenIdeaStatus(status) { return ['forming', 'armed', 'active'].includes(status); }
 
 function priceDecimals(symbol) {
   if (symbol.includes('JPY')) return 3;
-  if (symbol === 'XAU/USD') return 2;
+  if (symbol === 'XAU/USD' || symbol === 'XAG/USD') return 2;
   if (symbol === 'BTC/USD') return 0;
+  if (symbol === 'ETH/USD') return 1;
+  if (symbol === 'SOL/USD') return 2;
   return 5;
 }
 
 function priceBuffer(symbol, price) {
   const p = Math.abs(Number(price) || 1);
-  if (symbol === 'XAU/USD') return 1.25;
-  if (symbol.includes('JPY')) return 0.035;
-  if (symbol === 'BTC/USD') return Math.max(25, p * 0.00055);
-  return 0.00035;
+  if (symbol === 'XAU/USD') return Math.max(0.8, p * 0.00035);
+  if (symbol === 'XAG/USD') return Math.max(0.025, p * 0.0008);
+  if (symbol.includes('JPY')) return Math.max(0.025, p * 0.00018);
+  if (symbol === 'BTC/USD') return Math.max(35, p * 0.00055);
+  if (symbol === 'ETH/USD') return Math.max(2.5, p * 0.0008);
+  if (symbol === 'SOL/USD') return Math.max(0.15, p * 0.0012);
+  return Math.max(0.00025, p * 0.00018);
 }
 
-function zoneDistanceAllowance(symbol, price, zoneLow, zoneHigh) {
-  const h = Math.abs(Number(zoneHigh) - Number(zoneLow));
+function proximityAllowance(symbol, price, low, high) {
   const p = Math.abs(Number(price) || 1);
-  const pct = symbol === 'BTC/USD' ? p * 0.002 : p * 0.0008;
-  return Math.max(h * 1.5, pct, priceBuffer(symbol, p) * 2);
-}
-
-
-function distanceToCorrectZone(symbol, direction, price, low, high) {
-  const p = num(price), l = num(low), h = num(high);
-  if (!p || !l || !h) return { distance: null, text: 'No zone distance available.' };
-  if (direction === 'buy') {
-    if (p >= l && p <= h) return { distance: 0, text: 'Price is inside demand.' };
-    if (p > h) return { distance: p - h, text: `Price is ${formatDistance(symbol, p - h)} above demand.` };
-    return { distance: l - p, text: `Price is ${formatDistance(symbol, l - p)} below demand / through the zone.` };
-  }
-  if (p >= l && p <= h) return { distance: 0, text: 'Price is inside supply.' };
-  if (p < l) return { distance: l - p, text: `Price is ${formatDistance(symbol, l - p)} below supply.` };
-  return { distance: p - h, text: `Price is ${formatDistance(symbol, p - h)} above supply / through the zone.` };
-}
-
-function formatDistance(symbol, value) {
-  const v = Math.abs(Number(value) || 0);
-  if (symbol === 'BTC/USD') return v.toFixed(0);
-  if (symbol === 'XAU/USD') return v.toFixed(2);
-  if (symbol.includes('JPY')) return v.toFixed(3);
-  return v.toFixed(5);
-}
-
-function similarLevel(symbol, a, b, refPrice) {
-  const x = num(a), y = num(b);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-  const tolerance = priceBuffer(symbol, refPrice || x || y) * 1.25;
-  return Math.abs(x - y) <= tolerance;
-}
-
-function similarIdeaToCandidate(idea, candidate) {
-  if (!idea || !candidate) return false;
-  if (idea.symbol !== candidate.symbol || idea.direction !== candidate.direction) return false;
-  const ref = candidate.planned_entry || candidate.latest_price || candidate.target_price;
-  if (!similarLevel(candidate.symbol, idea.take_profit, candidate.target_price, ref)) return false;
-  if (candidate.direction === 'buy') {
-    return similarLevel(candidate.symbol, idea.demand_low, candidate.demand_low, ref)
-      && similarLevel(candidate.symbol, idea.demand_high, candidate.demand_high, ref);
-  }
-  return similarLevel(candidate.symbol, idea.supply_low, candidate.supply_low, ref)
-    && similarLevel(candidate.symbol, idea.supply_high, candidate.supply_high, ref);
-}
-
-async function hasRecentSimilarIdea(supabase, candidate, now, memoryMinutes) {
-  const since = addMinutes(now, -Math.max(Number(memoryMinutes) || DEFAULT_CANDIDATE_MEMORY_MINUTES, DEFAULT_CANDIDATE_MEMORY_MINUTES));
-  const { data, error } = await supabase
-    .from('eve_confluence_trade_ideas')
-    .select('symbol,direction,status,demand_low,demand_high,supply_low,supply_high,take_profit,created_at,completed_at')
-    .eq('symbol', candidate.symbol)
-    .eq('direction', candidate.direction)
-    .gte('created_at', since)
-    .order('created_at', { ascending: false })
-    .limit(40);
-  if (error) return false;
-  return (data || []).some((idea) => similarIdeaToCandidate(idea, candidate));
-}
-
-function classifyBuyZone(price, low, high, symbol) {
-  if (!price || !low || !high) return 'no_zone';
-  const allowance = zoneDistanceAllowance(symbol, price, low, high);
-  if (price < low) return 'below_demand_invalid';
-  if (price >= low && price <= high) return 'inside_demand';
-  if (price > high && price <= high + allowance) return 'near_demand';
-  return 'waiting_for_demand';
-}
-
-function classifySellZone(price, low, high, symbol) {
-  if (!price || !low || !high) return 'no_zone';
-  const allowance = zoneDistanceAllowance(symbol, price, low, high);
-  if (price > high) return 'above_supply_invalid';
-  if (price >= low && price <= high) return 'inside_supply';
-  if (price < low && price >= low - allowance) return 'near_supply';
-  return 'waiting_for_supply';
-}
-
-function computeBuyStop(symbol, price, demandLow, protectedLevel) {
-  if (!price || !demandLow) return null;
-  const buffer = priceBuffer(symbol, price);
-  const protectedLow = protectedLevel && Number(protectedLevel) < Number(price) ? Number(protectedLevel) : null;
-  const base = protectedLow ? Math.min(Number(demandLow), protectedLow) : Number(demandLow);
-  return base - buffer;
-}
-
-function computeSellStop(symbol, price, supplyHigh, protectedLevel) {
-  if (!price || !supplyHigh) return null;
-  const buffer = priceBuffer(symbol, price);
-  const protectedHigh = protectedLevel && Number(protectedLevel) > Number(price) ? Number(protectedLevel) : null;
-  const base = protectedHigh ? Math.max(Number(supplyHigh), protectedHigh) : Number(supplyHigh);
-  return base + buffer;
+  const width = Math.abs(Number(high) - Number(low));
+  return Math.max(width * 1.35, priceBuffer(symbol, p) * 2.2, p * (symbol.includes('/USD') && ['BTC/USD', 'ETH/USD', 'SOL/USD'].includes(symbol) ? 0.0015 : 0.00055));
 }
 
 function rrFor(direction, entry, stop, target) {
   const e = Number(entry), s = Number(stop), t = Number(target);
   if (![e, s, t].every(Number.isFinite)) return { risk: null, reward: null, rr: 0 };
-  let risk, reward;
-  if (direction === 'buy') {
-    risk = e - s;
-    reward = t - e;
-  } else {
-    risk = s - e;
-    reward = e - t;
-  }
+  const risk = direction === 'buy' ? e - s : s - e;
+  const reward = direction === 'buy' ? t - e : e - t;
   if (risk <= 0 || reward <= 0) return { risk, reward, rr: 0 };
   return { risk, reward, rr: reward / risk };
+}
+
+function zonedParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(date);
+  const out = {};
+  for (const part of parts) {
+    if (part.type !== 'literal') out[part.type] = part.value;
+  }
+  const hour = Number(out.hour) === 24 ? 0 : Number(out.hour);
+  return {
+    weekday: out.weekday,
+    year: Number(out.year),
+    month: Number(out.month),
+    day: Number(out.day),
+    hour,
+    minute: Number(out.minute),
+    minutes: hour * 60 + Number(out.minute)
+  };
+}
+
+function weekdayOpen(parts) { return !['Sat', 'Sun'].includes(parts.weekday); }
+
+function activeSessionAt(date = new Date()) {
+  const london = zonedParts(date, 'Europe/London');
+  const newYork = zonedParts(date, 'America/New_York');
+
+  if (weekdayOpen(london) && london.minutes >= 8 * 60 + 15 && london.minutes <= 11 * 60) {
+    return {
+      key: 'london',
+      name: 'London',
+      label: 'LONDON IDEA WINDOW',
+      time_zone: 'Europe/London',
+      local_start: '08:15',
+      local_finish: '11:00'
+    };
+  }
+  if (weekdayOpen(newYork) && newYork.minutes >= 8 * 60 + 30 && newYork.minutes <= 11 * 60) {
+    return {
+      key: 'new_york',
+      name: 'New York',
+      label: 'NEW YORK IDEA WINDOW',
+      time_zone: 'America/New_York',
+      local_start: '08:30',
+      local_finish: '11:00'
+    };
+  }
+  return null;
+}
+
+function nextSessionStart(date = new Date()) {
+  const cursor = new Date(date.getTime() + 60_000);
+  cursor.setUTCSeconds(0, 0);
+  let wasOpen = Boolean(activeSessionAt(date));
+  for (let i = 0; i < 8 * 24 * 60; i += 1) {
+    const session = activeSessionAt(cursor);
+    if (session && !wasOpen) return { at: cursor.toISOString(), session };
+    wasOpen = Boolean(session);
+    cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
+  }
+  return null;
+}
+
+function sessionState(date = new Date()) {
+  const active = activeSessionAt(date);
+  return {
+    is_open: Boolean(active),
+    active,
+    next: nextSessionStart(date),
+    london_window: '08:15–11:00 Europe/London',
+    new_york_window: '08:30–11:00 America/New_York'
+  };
+}
+
+function nextFiveMinuteSlot(date = new Date()) {
+  const d = new Date(date.getTime());
+  d.setUTCSeconds(0, 0);
+  d.setUTCMinutes(Math.floor(d.getUTCMinutes() / 5) * 5 + 5);
+  return d.toISOString();
 }
 
 async function getSetting(supabase, key, fallback) {
   const { data, error } = await supabase.from('eve_confluence_settings').select('value').eq('key', key).maybeSingle();
   if (error || !data) return fallback;
-  const v = data.value;
-  if (typeof fallback === 'number') return Number(v) || fallback;
-  if (typeof fallback === 'boolean') return Boolean(v);
-  return v ?? fallback;
+  const value = data.value;
+  if (typeof fallback === 'number') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  if (typeof fallback === 'boolean') return Boolean(value);
+  return value ?? fallback;
+}
+
+async function latestUsableRun(supabase, source, now, maxAgeMinutes) {
+  const { data, error } = await supabase
+    .from(source.runTable)
+    .select('*')
+    .not('completed_at', 'is', null)
+    .order('started_at', { ascending: false })
+    .limit(15);
+  if (error) {
+    return { ...source, run: null, rows: [], map: {}, isFresh: false, ageMinutes: null, status: 'error', error: error.message };
+  }
+  const badWords = ['starting', 'failed', 'error', 'disabled', 'skipped'];
+  const run = (data || []).find((row) => !badWords.some((word) => lower(row.mode).includes(word))) || null;
+  if (!run) return { ...source, run: null, rows: [], map: {}, isFresh: false, ageMinutes: null, status: 'missing' };
+  const ageMinutes = minutesBetween(now, run.completed_at || run.started_at);
+  const isFresh = ageMinutes <= maxAgeMinutes;
+  const { data: rows, error: rowsError } = await supabase
+    .from(source.rowTable)
+    .select('*')
+    .eq('scan_id', run.id)
+    .order('rank', { ascending: true, nullsFirst: false });
+  const usableRows = rowsError ? [] : (rows || []);
+  return {
+    ...source,
+    run,
+    rows: usableRows,
+    map: Object.fromEntries(usableRows.map((row) => [row.symbol, row])),
+    isFresh,
+    ageMinutes: round(ageMinutes, 1),
+    status: rowsError ? 'error' : (isFresh ? 'fresh' : 'stale'),
+    error: rowsError?.message || null
+  };
+}
+
+async function loadInputs(supabase, now, maxAgeMinutes) {
+  const sourceRows = await Promise.all(SOURCE_SCANNERS.map((source) => latestUsableRun(supabase, source, now, maxAgeMinutes)));
+  const sources = Object.fromEntries(sourceRows.map((source) => [source.key, source]));
+  return {
+    sources,
+    allFresh: sourceRows.every((source) => source.isFresh),
+    freshCount: sourceRows.filter((source) => source.isFresh).length,
+    checked_at: now.toISOString(),
+    max_age_minutes: maxAgeMinutes
+  };
+}
+
+function marketData(inputs, symbol) {
+  const bias = inputs.sources.bias?.map?.[symbol] || null;
+  const zones = inputs.sources.zones?.map?.[symbol] || null;
+  const structure = inputs.sources.structure?.map?.[symbol] || null;
+  const liquidity = inputs.sources.liquidity?.map?.[symbol] || null;
+  const candidates = [
+    { row: liquidity, source: 'Liquidity' },
+    { row: zones, source: 'Zones' },
+    { row: structure, source: 'Structure' },
+    { row: bias, source: 'Bias' }
+  ].filter((item) => num(item.row?.latest_price));
+  candidates.sort((a, b) => {
+    const ta = new Date(a.row.latest_candle_at || a.row.created_at || 0).getTime();
+    const tb = new Date(b.row.latest_candle_at || b.row.created_at || 0).getTime();
+    return tb - ta;
+  });
+  return {
+    bias,
+    zones,
+    structure,
+    liquidity,
+    price: num(candidates[0]?.row?.latest_price),
+    price_source: candidates[0]?.source || null
+  };
+}
+
+function marketIsOpen(market, data) {
+  if (market.asset_class === 'crypto') return true;
+  const rows = [data.bias, data.zones, data.structure, data.liquidity].filter(Boolean);
+  if (!rows.length) return false;
+  return rows.some((row) => row.is_open !== false);
+}
+
+function sourceRowUsable(source, row) {
+  return Boolean(source?.isFresh && row && row.is_stale !== true);
+}
+
+function structureSupport(direction, structure) {
+  if (!structure) return { points: 5, label: 'Structure unavailable' };
+  const bias = structure.structure_bias;
+  if ((direction === 'buy' && isBullish(bias)) || (direction === 'sell' && isBearish(bias))) {
+    return { points: 15, label: 'Structure agrees' };
+  }
+  if ((direction === 'buy' && isBearish(bias)) || (direction === 'sell' && isBullish(bias))) {
+    return { points: 0, label: 'Structure disagrees' };
+  }
+  return { points: 7, label: 'Structure is mixed' };
+}
+
+function sessionFitPoints(session, market) {
+  if (!session) return 0;
+  const s = market.symbol;
+  if (session.key === 'london') {
+    if (['EUR/USD', 'GBP/USD', 'EUR/JPY', 'GBP/JPY', 'XAU/USD', 'XAG/USD'].includes(s)) return 5;
+    if (market.asset_class === 'crypto') return 2;
+    return 3;
+  }
+  if (['XAU/USD', 'XAG/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'].includes(s)) return 5;
+  if (market.asset_class === 'crypto') return 3;
+  return 3;
+}
+
+function classifyZone(direction, symbol, price, low, high) {
+  const p = num(price), l = num(low), h = num(high);
+  if (![p, l, h].every(Number.isFinite) || l >= h) return { key: 'no_zone', points: 0, distance: null, allowance: null };
+  const allowance = proximityAllowance(symbol, p, l, h);
+  if (direction === 'buy') {
+    if (p < l) return { key: 'zone_failed', points: 0, distance: l - p, allowance };
+    if (p <= h) return { key: 'touching', points: 23, distance: 0, allowance };
+    const distance = p - h;
+    if (distance <= allowance) return { key: 'near', points: 20, distance, allowance };
+    if (distance <= allowance * 3) return { key: 'approaching', points: 16, distance, allowance };
+    return { key: 'waiting', points: 5, distance, allowance };
+  }
+  if (p > h) return { key: 'zone_failed', points: 0, distance: p - h, allowance };
+  if (p >= l) return { key: 'touching', points: 23, distance: 0, allowance };
+  const distance = l - p;
+  if (distance <= allowance) return { key: 'near', points: 20, distance, allowance };
+  if (distance <= allowance * 3) return { key: 'approaching', points: 16, distance, allowance };
+  return { key: 'waiting', points: 5, distance, allowance };
+}
+
+function classifyRetest(direction, symbol, price, level) {
+  const p = num(price), l = num(level);
+  if (![p, l].every(Number.isFinite)) return { key: 'no_level', points: 0, distance: null, allowance: null };
+  const allowance = Math.max(priceBuffer(symbol, p) * 2.4, Math.abs(l) * (['BTC/USD', 'ETH/USD', 'SOL/USD'].includes(symbol) ? 0.0014 : 0.0005));
+  if (direction === 'buy') {
+    if (p < l - allowance * 0.45) return { key: 'retest_failed', points: 0, distance: l - p, allowance };
+    const distance = Math.abs(p - l);
+    if (distance <= allowance * 0.65) return { key: 'touching', points: 24, distance, allowance };
+    if (p > l && distance <= allowance * 1.5) return { key: 'near', points: 21, distance, allowance };
+    if (p > l && distance <= allowance * 3.5) return { key: 'approaching', points: 16, distance, allowance };
+    return { key: 'waiting', points: 5, distance, allowance };
+  }
+  if (p > l + allowance * 0.45) return { key: 'retest_failed', points: 0, distance: p - l, allowance };
+  const distance = Math.abs(p - l);
+  if (distance <= allowance * 0.65) return { key: 'touching', points: 24, distance, allowance };
+  if (p < l && distance <= allowance * 1.5) return { key: 'near', points: 21, distance, allowance };
+  if (p < l && distance <= allowance * 3.5) return { key: 'approaching', points: 16, distance, allowance };
+  return { key: 'waiting', points: 5, distance, allowance };
+}
+
+function targetCandidates(direction, entry, data) {
+  const e = Number(entry);
+  const list = [];
+  function add(value, source, quality = 50) {
+    const price = num(value);
+    if (!Number.isFinite(price)) return;
+    if ((direction === 'buy' && price > e) || (direction === 'sell' && price < e)) {
+      list.push({ price, source, quality: clamp(quality, 0, 100) });
+    }
+  }
+  if (direction === 'buy') {
+    add(data.liquidity?.demand_target_price, data.liquidity?.demand_target_type || 'buy-side liquidity', data.liquidity?.demand_target_quality || 60);
+    add(data.zones?.supply_low, 'nearest supply', data.zones?.supply_quality || 50);
+  } else {
+    add(data.liquidity?.supply_target_price, data.liquidity?.supply_target_type || 'sell-side liquidity', data.liquidity?.supply_target_quality || 60);
+    add(data.zones?.demand_high, 'nearest demand', data.zones?.demand_quality || 50);
+  }
+  list.sort((a, b) => direction === 'buy' ? a.price - b.price : b.price - a.price);
+  return list;
+}
+
+function bestTarget(direction, entry, stop, data, minPlannedRr) {
+  const targets = targetCandidates(direction, entry, data);
+  const target = targets[0];
+  if (!target) return null;
+  const rr = rrFor(direction, entry, stop, target.price);
+  if (rr.rr < minPlannedRr) return null;
+  return { ...target, ...rr };
+}
+
+function biasBase(data) {
+  const direction = directionFromBias(data.bias?.bias);
+  const score = clamp(data.bias?.bias_score ?? data.bias?.score, 0, 100);
+  const watchOnly = lower(data.bias?.bias).includes('watch') || lower(data.bias?.status).includes('watch');
+  return { direction, score, watchOnly };
+}
+
+function baseAsset(market, data) {
+  return {
+    symbol: market.symbol,
+    display_name: market.display_name,
+    asset_class: market.asset_class,
+    is_open: marketIsOpen(market, data),
+    direction: 'none',
+    status: 'no_trade',
+    strategy_type: null,
+    session_name: null,
+    confluence_score: 0,
+    reason: 'No setup found.',
+    bias: data.bias?.bias || null,
+    bias_score: num(data.bias?.bias_score ?? data.bias?.score) || 0,
+    structure_bias: data.structure?.structure_bias || null,
+    structure_score: num(data.structure?.score) || 0,
+    zone_quality: 0,
+    liquidity_quality: 0,
+    latest_price: data.price,
+    planned_entry: null,
+    demand_low: num(data.zones?.demand_low ?? data.liquidity?.demand_low),
+    demand_high: num(data.zones?.demand_high ?? data.liquidity?.demand_high),
+    supply_low: num(data.zones?.supply_low ?? data.liquidity?.supply_low),
+    supply_high: num(data.zones?.supply_high ?? data.liquidity?.supply_high),
+    target_price: null,
+    stop_loss: null,
+    risk_amount: null,
+    reward_amount: null,
+    rr: 0,
+    zone_state: null,
+    target_source: null,
+    sl_reason: null,
+    raw: { price_source: data.price_source }
+  };
+}
+
+function buildPullbackOption(market, data, inputs, session, settings) {
+  const base = baseAsset(market, data);
+  const bias = biasBase(data);
+  if (!sourceRowUsable(inputs.sources.bias, data.bias) || !sourceRowUsable(inputs.sources.zones, data.zones)) return null;
+  if (!bias.direction || bias.watchOnly || bias.score < settings.minimumDirectionalBias) return null;
+  const direction = bias.direction;
+  const low = direction === 'buy' ? num(data.zones.demand_low) : num(data.zones.supply_low);
+  const high = direction === 'buy' ? num(data.zones.demand_high) : num(data.zones.supply_high);
+  if (![low, high, data.price].every(Number.isFinite) || low >= high) return null;
+
+  const entry = direction === 'buy' ? high : low;
+  const stop = direction === 'buy'
+    ? low - priceBuffer(market.symbol, entry)
+    : high + priceBuffer(market.symbol, entry);
+  const targetData = {
+    ...data,
+    zones: sourceRowUsable(inputs.sources.zones, data.zones) ? data.zones : null,
+    liquidity: sourceRowUsable(inputs.sources.liquidity, data.liquidity) ? data.liquidity : null
+  };
+  const target = bestTarget(direction, entry, stop, targetData, settings.minimumPlannedRr);
+  if (!target) return null;
+
+  const proximity = classifyZone(direction, market.symbol, data.price, low, high);
+  if (['zone_failed', 'no_zone'].includes(proximity.key)) return null;
+  const structure = structureSupport(direction, sourceRowUsable(inputs.sources.structure, data.structure) ? data.structure : null);
+  const zoneQuality = clamp(direction === 'buy' ? data.zones.demand_quality : data.zones.supply_quality, 0, 100);
+  const biasPoints = clamp(bias.score * 0.45, 0, 30);
+  const zonePoints = clamp(zoneQuality * 0.25, 0, 25);
+  const targetPoints = clamp(target.quality * 0.08 + 2, 0, 10);
+  const rrPoints = clamp(4 + (target.rr - settings.minimumPlannedRr) * 3, 4, 8);
+  const score = round(clamp(biasPoints + zonePoints + proximity.points + structure.points + targetPoints + rrPoints + sessionFitPoints(session, market), 0, 100), 1);
+  const status = proximity.key === 'touching' ? 'armed' : (['near', 'approaching'].includes(proximity.key) ? 'forming' : 'candidate');
+  const area = direction === 'buy' ? 'demand' : 'supply';
+  const action = status === 'armed'
+    ? `Price is in ${area}. Waiting for the next completed M5 candle to reject the zone.`
+    : status === 'forming'
+      ? `Price is approaching ${area}. Entry plan is ready.`
+      : `Good pullback plan, but price is still away from ${area}.`;
+
+  return {
+    ...base,
+    direction,
+    status,
+    strategy_type: 'pullback',
+    session_name: session?.name || null,
+    confluence_score: score,
+    reason: `${direction.toUpperCase()} pullback — Bias points ${direction}, ${area} provides the entry, and ${target.source} provides the target. ${action}`,
+    zone_quality: zoneQuality,
+    liquidity_quality: target.quality,
+    planned_entry: entry,
+    target_price: target.price,
+    stop_loss: stop,
+    risk_amount: target.risk,
+    reward_amount: target.reward,
+    rr: target.rr,
+    zone_state: proximity.key,
+    target_source: target.source,
+    sl_reason: `Stop beyond ${area}.`,
+    raw: {
+      ...base.raw,
+      trade_engine: {
+        strategy_type: 'pullback',
+        proximity,
+        structure_support: structure.label,
+        session: session?.key || null,
+        planned_entry: entry
+      }
+    }
+  };
+}
+
+function eventAgeMinutes(structure, now) {
+  const at = structure?.latest_event_time || structure?.bos_time;
+  if (!at) return null;
+  return minutesBetween(now, at);
+}
+
+function breakoutLevel(direction, structure, now) {
+  if (!structure) return null;
+  const aligned = (value) => direction === 'buy' ? isBullish(value) : isBearish(value);
+
+  const bosLevel = num(structure.bos_level);
+  const bosAge = structure.bos_time ? minutesBetween(now, structure.bos_time) : null;
+  if (Number.isFinite(bosLevel) && aligned(structure.bos_direction) && (!Number.isFinite(bosAge) || bosAge <= 180)) {
+    return bosLevel;
+  }
+
+  const latestLevel = num(structure.latest_event_level);
+  const latestAge = structure.latest_event_time ? minutesBetween(now, structure.latest_event_time) : null;
+  if (lower(structure.latest_event_type) === 'bos' && Number.isFinite(latestLevel) && aligned(structure.latest_event_direction) && (!Number.isFinite(latestAge) || latestAge <= 180)) {
+    return latestLevel;
+  }
+  return null;
+}
+
+function buildBreakoutOption(market, data, inputs, session, settings, now) {
+  const base = baseAsset(market, data);
+  const bias = biasBase(data);
+  if (!sourceRowUsable(inputs.sources.bias, data.bias) || !sourceRowUsable(inputs.sources.structure, data.structure)) return null;
+  if (!bias.direction || bias.watchOnly || bias.score < settings.minimumDirectionalBias) return null;
+  const direction = bias.direction;
+  const level = breakoutLevel(direction, data.structure, now);
+  if (!Number.isFinite(level) || !Number.isFinite(data.price)) return null;
+
+  const stop = direction === 'buy'
+    ? level - priceBuffer(market.symbol, level) * 1.35
+    : level + priceBuffer(market.symbol, level) * 1.35;
+  const targetData = {
+    ...data,
+    zones: sourceRowUsable(inputs.sources.zones, data.zones) ? data.zones : null,
+    liquidity: sourceRowUsable(inputs.sources.liquidity, data.liquidity) ? data.liquidity : null
+  };
+  const target = bestTarget(direction, level, stop, targetData, settings.minimumPlannedRr);
+  if (!target) return null;
+  const proximity = classifyRetest(direction, market.symbol, data.price, level);
+  if (['retest_failed', 'no_level'].includes(proximity.key)) return null;
+
+  const structureScore = clamp(data.structure.score, 0, 100);
+  const biasPoints = clamp(bias.score * 0.43, 0, 28);
+  const structurePoints = clamp(10 + structureScore * 0.16, 10, 25);
+  const targetPoints = clamp(target.quality * 0.08 + 2, 0, 10);
+  const rrPoints = clamp(4 + (target.rr - settings.minimumPlannedRr) * 3, 4, 8);
+  const zoneConfluence = (() => {
+    if (!sourceRowUsable(inputs.sources.zones, data.zones)) return 2;
+    if (direction === 'buy' && num(data.zones.demand_high) && level >= Number(data.zones.demand_high)) return 5;
+    if (direction === 'sell' && num(data.zones.supply_low) && level <= Number(data.zones.supply_low)) return 5;
+    return 3;
+  })();
+  const score = round(clamp(biasPoints + structurePoints + proximity.points + targetPoints + rrPoints + zoneConfluence + sessionFitPoints(session, market), 0, 100), 1);
+  const status = proximity.key === 'touching' ? 'armed' : (['near', 'approaching'].includes(proximity.key) ? 'forming' : 'candidate');
+  const action = status === 'armed'
+    ? 'Price is retesting the broken level. Waiting for the next completed M5 candle to hold.'
+    : status === 'forming'
+      ? 'Price is coming back toward the broken level. The retest plan is ready.'
+      : 'The break is valid, but price has not returned to the level yet.';
+
+  return {
+    ...base,
+    direction,
+    status,
+    strategy_type: 'breakout_retest',
+    session_name: session?.name || null,
+    confluence_score: score,
+    reason: `${direction.toUpperCase()} breakout and retest — Bias agrees with a recent BOS. ${action}`,
+    zone_quality: 0,
+    liquidity_quality: target.quality,
+    planned_entry: level,
+    target_price: target.price,
+    stop_loss: stop,
+    risk_amount: target.risk,
+    reward_amount: target.reward,
+    rr: target.rr,
+    zone_state: proximity.key,
+    target_source: target.source,
+    sl_reason: 'Stop beyond the broken structure level.',
+    raw: {
+      ...base.raw,
+      trade_engine: {
+        strategy_type: 'breakout_retest',
+        proximity,
+        bos_level: level,
+        event_age_minutes: eventAgeMinutes(data.structure, now),
+        session: session?.key || null,
+        planned_entry: level
+      }
+    }
+  };
+}
+
+function buildMarketChoice(market, inputs, session, settings, now) {
+  const data = marketData(inputs, market.symbol);
+  const base = baseAsset(market, data);
+  if (!marketIsOpen(market, data)) return { ...base, reason: 'Market is closed or the scanners report it unavailable.' };
+  if (!Number.isFinite(data.price)) return { ...base, reason: 'Waiting for a current M5 price from the scanners.' };
+
+  const bias = biasBase(data);
+  if (!sourceRowUsable(inputs.sources.bias, data.bias)) return { ...base, reason: 'Bias data is missing or too old.' };
+  if (!bias.direction || bias.watchOnly) return { ...base, reason: 'Bias has no clear buy or sell direction yet.' };
+  if (bias.score < settings.minimumDirectionalBias) {
+    return { ...base, direction: bias.direction, reason: `Bias direction exists, but strength is ${Math.round(bias.score)}%. Waiting for at least ${settings.minimumDirectionalBias}%.` };
+  }
+
+  const options = [
+    buildPullbackOption(market, data, inputs, session, settings),
+    buildBreakoutOption(market, data, inputs, session, settings, now)
+  ].filter(Boolean);
+  if (!options.length) {
+    return {
+      ...base,
+      direction: bias.direction,
+      confluence_score: round(clamp(bias.score * 0.5, 0, 50), 1),
+      reason: `${bias.direction.toUpperCase()} bias is present, but no clean 1:${settings.minimumPlannedRr} pullback or breakout-retest plan is available.`
+    };
+  }
+  options.sort((a, b) => Number(b.confluence_score) - Number(a.confluence_score));
+  return options[0];
+}
+
+async function insertEvent(supabase, eventType, idea, message, raw = {}) {
+  await supabase.from('eve_confluence_events').insert({
+    event_type: eventType,
+    symbol: idea?.symbol || null,
+    idea_id: idea?.id || null,
+    message,
+    raw
+  });
+}
+
+async function getOpenIdea(supabase) {
+  const { data, error } = await supabase
+    .from('eve_confluence_trade_ideas')
+    .select('*')
+    .in('status', ['forming', 'armed', 'active'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) return null;
+  return data || null;
+}
+
+async function getIdea(supabase, id) {
+  if (!id) return null;
+  const { data, error } = await supabase.from('eve_confluence_trade_ideas').select('*').eq('id', id).maybeSingle();
+  if (error) return null;
+  return data || null;
+}
+
+async function getCurrentFocus(supabase) {
+  const { data, error } = await supabase.from('eve_confluence_current_focus').select('*').eq('id', 'current').maybeSingle();
+  if (error) return null;
+  return data || null;
+}
+
+async function setFocus(supabase, fields) {
+  const row = {
+    id: 'current',
+    symbol: fields.symbol ?? null,
+    direction: fields.direction ?? null,
+    status: fields.status || 'waiting',
+    idea_id: fields.idea_id ?? null,
+    confluence_score: fields.confluence_score || 0,
+    reason: fields.reason || null,
+    locked_at: fields.locked_at ?? null,
+    lock_until: fields.lock_until ?? null,
+    last_scan_id: fields.last_scan_id ?? null,
+    last_scan_at: fields.last_scan_at || nowIso(),
+    last_live_price: fields.last_live_price ?? null,
+    last_live_at: fields.last_live_at ?? null,
+    raw: fields.raw || {},
+    updated_at: nowIso()
+  };
+  const { error } = await supabase.from('eve_confluence_current_focus').upsert(row);
+  if (error) throw error;
+}
+
+async function updateIdea(supabase, id, patch) {
+  const { data, error } = await supabase
+    .from('eve_confluence_trade_ideas')
+    .update({ ...patch, updated_at: nowIso() })
+    .eq('id', id)
+    .select('*')
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function closeIdea(supabase, idea, status, outcome, note, resultR = null) {
+  const closed = await updateIdea(supabase, idea.id, {
+    status,
+    outcome,
+    completed_at: nowIso(),
+    result_r: Number.isFinite(Number(resultR)) ? Number(resultR) : null,
+    latest_note: note,
+    reason: note,
+    last_checked_at: nowIso()
+  });
+  await insertEvent(supabase, `idea_${status}`, closed || idea, note, { result_r: resultR });
+  return closed || { ...idea, status, outcome, latest_note: note };
+}
+
+function ideaStrategy(idea) {
+  return idea.strategy_type || idea.raw?.trade_engine?.strategy_type || 'pullback';
+}
+
+function ideaTouchState(idea, price) {
+  const strategy = ideaStrategy(idea);
+  if (strategy === 'breakout_retest') {
+    const level = num(idea.planned_entry ?? idea.forming_price);
+    if (!Number.isFinite(level)) return false;
+    const p = Number(price);
+    const allowance = Math.max(priceBuffer(idea.symbol, p) * 1.6, Math.abs(level) * (['BTC/USD', 'ETH/USD', 'SOL/USD'].includes(idea.symbol) ? 0.001 : 0.00035));
+    return Math.abs(p - level) <= allowance;
+  }
+  if (idea.direction === 'buy') return Number(price) >= Number(idea.demand_low) && Number(price) <= Number(idea.demand_high);
+  return Number(price) >= Number(idea.supply_low) && Number(price) <= Number(idea.supply_high);
+}
+
+function ideaConfirmed(idea, price) {
+  const p = Number(price);
+  const strategy = ideaStrategy(idea);
+  if (strategy === 'breakout_retest') {
+    const level = Number(idea.planned_entry ?? idea.forming_price);
+    const confirmation = priceBuffer(idea.symbol, p) * 0.2;
+    return idea.direction === 'buy' ? p > level + confirmation : p < level - confirmation;
+  }
+  return idea.direction === 'buy' ? p > Number(idea.demand_high) : p < Number(idea.supply_low);
+}
+
+async function manageOpenIdea(supabase, idea, inputs, now, settings) {
+  if (!idea || !isOpenIdeaStatus(idea.status)) return { idea: null, closed: false };
+  const data = marketData(inputs, idea.symbol);
+  const price = num(data.price);
+  if (!Number.isFinite(price)) {
+    const updated = await updateIdea(supabase, idea.id, {
+      latest_note: 'Waiting for the next completed M5 price from the scanners.',
+      last_checked_at: now.toISOString()
+    });
+    return { idea: updated || idea, closed: false };
+  }
+
+  if (idea.status === 'active') {
+    const won = idea.direction === 'buy' ? price >= Number(idea.take_profit) : price <= Number(idea.take_profit);
+    const lost = idea.direction === 'buy' ? price <= Number(idea.stop_loss) : price >= Number(idea.stop_loss);
+    if (won) {
+      const closed = await closeIdea(supabase, idea, 'won', 'win', `TP HIT on completed M5 data at ${price}.`, Number(idea.rr || 0));
+      return { idea: closed, closed: true };
+    }
+    if (lost) {
+      const closed = await closeIdea(supabase, idea, 'lost', 'loss', `SL HIT on completed M5 data at ${price}.`, -1);
+      return { idea: closed, closed: true };
+    }
+    const activeExpiry = idea.active_expires_at || addMinutes(new Date(idea.activated_at || idea.created_at), settings.activeExpiryMinutes);
+    if (new Date(activeExpiry).getTime() <= now.getTime()) {
+      const entry = Number(idea.entry_price);
+      const risk = Number(idea.risk_amount || (idea.direction === 'buy' ? entry - Number(idea.stop_loss) : Number(idea.stop_loss) - entry));
+      const move = idea.direction === 'buy' ? price - entry : entry - price;
+      const resultR = risk > 0 ? move / risk : null;
+      const closed = await closeIdea(supabase, idea, 'expired', 'expired', `Active trade expired at ${round(resultR || 0, 2)}R using the latest M5 close.`, resultR);
+      return { idea: closed, closed: true };
+    }
+    const updated = await updateIdea(supabase, idea.id, {
+      last_live_price: price,
+      last_live_at: now.toISOString(),
+      last_checked_at: now.toISOString(),
+      active_expires_at: activeExpiry,
+      latest_note: `ACTIVE — latest completed M5 price ${price}. Following until TP, SL or expiry.`
+    });
+    return { idea: updated || idea, closed: false };
+  }
+
+  const stopFailed = idea.direction === 'buy' ? price <= Number(idea.stop_loss) : price >= Number(idea.stop_loss);
+  if (stopFailed) {
+    const closed = await closeIdea(supabase, idea, 'invalidated_before_entry', 'invalidated_before_entry', `Setup invalidated before entry at ${price}.`, null);
+    return { idea: closed, closed: true };
+  }
+  const targetTaken = idea.direction === 'buy' ? price >= Number(idea.take_profit) : price <= Number(idea.take_profit);
+  if (targetTaken) {
+    const closed = await closeIdea(supabase, idea, 'no_trigger', 'no_trigger', 'Target liquidity was taken before a confirmed entry. Do not chase.', null);
+    return { idea: closed, closed: true };
+  }
+  if (idea.expires_at && new Date(idea.expires_at).getTime() <= now.getTime()) {
+    const closed = await closeIdea(supabase, idea, 'expired', 'expired', 'Setup expired before a confirmed M5 entry.', null);
+    return { idea: closed, closed: true };
+  }
+
+  const currentBias = directionFromBias(data.bias?.bias);
+  const currentBiasScore = clamp(data.bias?.bias_score ?? data.bias?.score, 0, 100);
+  if (sourceRowUsable(inputs.sources.bias, data.bias) && currentBias && currentBias !== idea.direction && currentBiasScore >= settings.minimumDirectionalBias) {
+    const closed = await closeIdea(supabase, idea, 'invalidated_before_entry', 'invalidated_before_entry', `Bias flipped to ${currentBias.toUpperCase()} before entry.`, null);
+    return { idea: closed, closed: true };
+  }
+
+  const touching = ideaTouchState(idea, price);
+  if (touching && !idea.touched_zone) {
+    const updated = await updateIdea(supabase, idea.id, {
+      status: 'armed',
+      armed_at: now.toISOString(),
+      touched_zone: true,
+      touched_zone_at: now.toISOString(),
+      last_live_price: price,
+      last_live_at: now.toISOString(),
+      last_checked_at: now.toISOString(),
+      latest_note: ideaStrategy(idea) === 'pullback'
+        ? 'IN ZONE — waiting for the next completed M5 candle to reject it.'
+        : 'RETEST TOUCHED — waiting for the next completed M5 candle to hold the broken level.'
+    });
+    await insertEvent(supabase, 'idea_armed', updated || idea, updated?.latest_note || 'Idea armed.');
+    return { idea: updated || idea, closed: false };
+  }
+
+  const touchedLongEnough = idea.touched_zone && idea.touched_zone_at && minutesBetween(now, idea.touched_zone_at) >= 4;
+  if (touchedLongEnough && ideaConfirmed(idea, price)) {
+    const rr = rrFor(idea.direction, price, idea.stop_loss, idea.take_profit);
+    if (rr.rr < settings.minimumConfirmedRr) {
+      const closed = await closeIdea(supabase, idea, 'no_trigger', 'no_trigger', `Confirmation arrived too late. Live M5 entry R:R fell to 1:${round(rr.rr, 2)}. Do not chase.`, null);
+      return { idea: closed, closed: true };
+    }
+    const updated = await updateIdea(supabase, idea.id, {
+      status: 'active',
+      activated_at: now.toISOString(),
+      entry_price: price,
+      risk_amount: rr.risk,
+      reward_amount: rr.reward,
+      rr: rr.rr,
+      last_live_price: price,
+      last_live_at: now.toISOString(),
+      last_checked_at: now.toISOString(),
+      active_expires_at: addMinutes(now, settings.activeExpiryMinutes),
+      latest_note: `${idea.direction.toUpperCase()} NOW — completed M5 confirmation at ${price}. SL ${idea.stop_loss}. TP ${idea.take_profit}. R:R 1:${round(rr.rr, 2)}.`
+    });
+    await insertEvent(supabase, 'idea_active', updated || idea, updated?.latest_note || 'Idea active.');
+    return { idea: updated || idea, closed: false };
+  }
+
+  const updated = await updateIdea(supabase, idea.id, {
+    status: idea.touched_zone ? 'armed' : 'forming',
+    last_live_price: price,
+    last_live_at: now.toISOString(),
+    last_checked_at: now.toISOString(),
+    latest_note: idea.touched_zone
+      ? 'Touched entry area. Waiting for a completed M5 candle to move away in the trade direction.'
+      : 'SETUP FORMING — waiting for price to reach the planned entry area.'
+  });
+  return { idea: updated || idea, closed: false };
+}
+
+async function recentDuplicate(supabase, option, now, cooldownMinutes) {
+  const since = addMinutes(now, -cooldownMinutes);
+  const { data, error } = await supabase
+    .from('eve_confluence_trade_ideas')
+    .select('id')
+    .eq('symbol', option.symbol)
+    .eq('direction', option.direction)
+    .eq('strategy_type', option.strategy_type)
+    .gte('created_at', since)
+    .limit(1);
+  return !error && (data || []).length > 0;
+}
+
+async function createIdea(supabase, option, session, now, settings) {
+  const armed = option.status === 'armed';
+  const payload = {
+    symbol: option.symbol,
+    direction: option.direction,
+    status: armed ? 'armed' : 'forming',
+    strategy_type: option.strategy_type,
+    session_name: session.name,
+    idea_score: option.confluence_score,
+    execution_type: 'completed_m5_confirmation',
+    focus_started_at: now.toISOString(),
+    lock_until: addMinutes(now, settings.ideaExpiryMinutes),
+    formed_at: now.toISOString(),
+    armed_at: armed ? now.toISOString() : null,
+    expires_at: addMinutes(now, settings.ideaExpiryMinutes),
+    planned_entry: option.planned_entry,
+    forming_price: option.latest_price,
+    entry_price: null,
+    stop_loss: option.stop_loss,
+    take_profit: option.target_price,
+    risk_amount: option.risk_amount,
+    reward_amount: option.reward_amount,
+    rr: option.rr,
+    demand_low: option.demand_low,
+    demand_high: option.demand_high,
+    supply_low: option.supply_low,
+    supply_high: option.supply_high,
+    target_source: option.target_source,
+    sl_reason: option.sl_reason,
+    touched_zone: armed,
+    touched_zone_at: armed ? now.toISOString() : null,
+    last_live_price: option.latest_price,
+    last_live_at: now.toISOString(),
+    last_checked_at: now.toISOString(),
+    reason: option.reason,
+    latest_note: armed
+      ? 'Entry area reached. Waiting for the next completed M5 confirmation.'
+      : 'Trade idea created. Waiting for price to reach the planned entry area.',
+    raw: {
+      trade_engine: {
+        version: 13,
+        strategy_type: option.strategy_type,
+        session: session.key,
+        session_name: session.name,
+        idea_score: option.confluence_score,
+        planned_entry: option.planned_entry,
+        scanner_snapshot: option.raw
+      }
+    }
+  };
+  const { data, error } = await supabase.from('eve_confluence_trade_ideas').insert(payload).select('*').maybeSingle();
+  if (error) throw error;
+  await insertEvent(supabase, 'idea_created', data, `${option.symbol} ${option.direction.toUpperCase()} ${option.strategy_type.replaceAll('_', ' ')} idea created in the ${session.name} window.`, { score: option.confluence_score });
+  return data;
 }
 
 async function latestRun(supabase, table) {
@@ -195,976 +921,204 @@ async function rowsForScan(supabase, table, scanId) {
   return data || [];
 }
 
-async function latestLivePrices(supabase) {
-  const { data } = await supabase.from('eve_confluence_live_prices').select('*');
-  return Object.fromEntries((data || []).map((r) => [r.symbol, r]));
-}
-
-function mapBySymbol(rows) { return Object.fromEntries((rows || []).map((r) => [r.symbol, r])); }
-
-function floorToFiveMinutes(date) {
-  const d = new Date(date.getTime());
-  d.setUTCSeconds(0, 0);
-  d.setUTCMinutes(Math.floor(d.getUTCMinutes() / 5) * 5);
-  return d;
-}
-
-function sourceDecisionCycle(now = new Date()) {
-  // Reviewed v10 rule: use the latest real completed scanner run inside a
-  // rolling freshness window. This is deliberately more stable than forcing
-  // every source scanner to land inside the exact same 5-minute bucket,
-  // because Netlify scheduled functions drift by seconds/minutes.
-  const end = new Date(now.getTime() + 60_000);
-  const start = new Date(now.getTime() - SOURCE_FRESHNESS_LOOKBACK_MINUTES * 60_000);
-  return { start, end };
-}
-
-function isRealSourceRun(run) {
-  if (!run || !run.completed_at) return false;
-  const mode = lower(run.mode);
-  if (!mode) return true;
-  if (mode.includes('skipped')) return false;
-  if (mode === 'starting' || mode === 'scanning') return false;
-  if (mode.includes('failed') || mode.includes('error')) return false;
-  return true;
-}
-
-async function latestRealRunForCycle(supabase, table, cycle) {
-  const { data, error } = await supabase
-    .from(table)
-    .select('*')
-    .gte('started_at', cycle.start.toISOString())
-    .lt('started_at', cycle.end.toISOString())
-    .order('started_at', { ascending: false })
-    .limit(12);
-  if (error) return null;
-  return (data || []).find(isRealSourceRun) || null;
-}
-
-async function getSourceFreshness(supabase, now = new Date()) {
-  const cycle = sourceDecisionCycle(now);
-  const pairs = await Promise.all(SOURCE_SCANNERS.map(async (scanner) => {
-    const run = await latestRealRunForCycle(supabase, scanner.runTable, cycle);
-    const fresh = Boolean(run);
-    return [scanner.key, {
-      key: scanner.key,
-      label: scanner.label,
-      fresh,
-      status: fresh ? 'fresh' : 'waiting',
-      run_id: run?.id || null,
-      started_at: run?.started_at || null,
-      completed_at: run?.completed_at || null,
-      mode: run?.mode || null,
-      run
-    }];
-  }));
-  const sources = Object.fromEntries(pairs);
-  const allFresh = SOURCE_SCANNERS.every((s) => sources[s.key]?.fresh);
-  const waiting = SOURCE_SCANNERS.filter((s) => !sources[s.key]?.fresh).map((s) => s.label);
-  return {
-    allFresh,
-    waiting,
-    cycle_start: cycle.start.toISOString(),
-    cycle_end: cycle.end.toISOString(),
-    sources
-  };
-}
-
-function sourceFreshnessReason(freshness) {
-  if (freshness?.allFresh) return 'All four backbone scanners are fresh. Confluence decision allowed.';
-  const waiting = freshness?.waiting?.length ? freshness.waiting.join(', ') : 'source scanners';
-  return `Waiting for fresh ${waiting} scan${freshness?.waiting?.length === 1 ? '' : 's'}. No new trade decision yet.`;
-}
-
-function pickPrice(symbol, live, bias, zones, structure, liquidity) {
-  const prices = [live?.price, liquidity?.latest_price, zones?.latest_price, structure?.latest_price, bias?.latest_price].map(num).filter((v) => v && v > 0);
-  return prices[0] || null;
-}
-
-function buildCandidate(market, data, minRr) {
-  const { bias, zones, structure, liquidity, live } = data;
-  const symbol = market.symbol;
-  const price = pickPrice(symbol, live, bias, zones, structure, liquidity);
-  const isOpen = !(marketClosed(symbol, market.asset_class)) && (bias?.is_open !== false) && (zones?.is_open !== false) && (structure?.is_open !== false) && (liquidity?.is_open !== false);
-
-  const base = {
-    symbol,
-    display_name: market.display_name,
-    asset_class: market.asset_class,
-    is_open: isOpen,
-    latest_price: price,
-    bias: bias?.bias || null,
-    bias_score: num(bias?.score ?? bias?.bias_score) || 0,
-    structure_bias: structure?.structure_bias || null,
-    structure_score: num(structure?.score) || 0,
-    demand_low: num(zones?.demand_low ?? liquidity?.demand_low),
-    demand_high: num(zones?.demand_high ?? liquidity?.demand_high),
-    supply_low: num(zones?.supply_low ?? liquidity?.supply_low),
-    supply_high: num(zones?.supply_high ?? liquidity?.supply_high),
-    direction: 'none',
-    status: 'no_trade',
-    confluence_score: 0,
-    reason: 'Waiting for scanner data.',
-    raw: { bias, zones, structure, liquidity, live }
-  };
-
-  if (!isOpen) return { ...base, reason: 'Market closed or stale. No trade.' };
-  if (!price) return { ...base, reason: 'No live/latest price. No trade.' };
-  if (!bias || !structure || !zones || !liquidity) return { ...base, reason: 'Waiting for Bias, Structure, Zones and Liquidity to all report.' };
-
-  const biasScore = num(bias?.score ?? bias?.bias_score) || 0;
-  const shownBiasScore = displayedPercent(biasScore);
-  if (shownBiasScore < MIN_BIAS_QUALITY_FOR_TRADE || lower(bias.bias).includes('watch')) {
-    return { ...base, reason: `No trade — bias is only ${shownBiasScore}%${lower(bias.bias).includes('watch') ? ' / Watch Only' : ''}. Minimum clean bias is ${MIN_BIAS_QUALITY_FOR_TRADE}%. Bias is the gatekeeper.` };
-  }
-
-  const biasPassed = withProgress(base, 25);
-  const bullAligned = isBullish(bias.bias) && isBullish(structure.structure_bias);
-  const bearAligned = isBearish(bias.bias) && isBearish(structure.structure_bias);
-  if (!bullAligned && !bearAligned) {
-    return { ...biasPassed, reason: `Bias passed at ${shownBiasScore}%, but structure is not cleanly aligned. Bias: ${bias.bias || 'n/a'}, Structure: ${structure.structure_bias || 'n/a'}.` };
-  }
-  const alignedBase = withProgress(base, 45);
-
-  const options = [];
-  if (bullAligned) {
-    const plannedEntry = num(base.demand_high);
-    const stop = computeBuyStop(symbol, plannedEntry || price, base.demand_low, num(structure.protected_level));
-    const target = num(liquidity.demand_target_price);
-    const quality = num(zones.demand_quality) || 0;
-    const liqQuality = num(liquidity.demand_target_quality) || 0;
-    const zoneState = classifyBuyZone(price, base.demand_low, base.demand_high, symbol);
-    const rr = rrFor('buy', plannedEntry || price, stop, target);
-    options.push(makeScoredOption({ base: alignedBase, direction: 'buy', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.demand_target_type || 'demand_target_liquidity', minRr }));
-  }
-  if (bearAligned) {
-    const plannedEntry = num(base.supply_low);
-    const stop = computeSellStop(symbol, plannedEntry || price, base.supply_high, num(structure.protected_level));
-    const target = num(liquidity.supply_target_price);
-    const quality = num(zones.supply_quality) || 0;
-    const liqQuality = num(liquidity.supply_target_quality) || 0;
-    const zoneState = classifySellZone(price, base.supply_low, base.supply_high, symbol);
-    const rr = rrFor('sell', plannedEntry || price, stop, target);
-    options.push(makeScoredOption({ base: alignedBase, direction: 'sell', zoneState, plannedEntry, stop, target, zoneQuality: quality, liquidityQuality: liqQuality, rr, targetSource: liquidity.supply_target_type || 'supply_target_liquidity', minRr }));
-  }
-
-  return options.sort((a, b) => b.confluence_score - a.confluence_score)[0] || base;
-}
-
-function makeScoredOption({ base, direction, zoneState, plannedEntry, stop, target, zoneQuality, liquidityQuality, rr, targetSource, minRr }) {
-  const badZone = zoneState.includes('invalid') || zoneState === 'no_zone';
-  const hasCleanStop = stop && Number.isFinite(Number(stop));
-  const hasTarget = target && Number.isFinite(Number(target));
-  const slReason = direction === 'buy' ? 'Below demand / protected low. SL calculated before idea.' : 'Above supply / protected high. SL calculated before idea.';
-
-  if (!hasCleanStop) {
-    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: null, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, reason: 'No trade — stop loss is not clean. No SL = no trade idea.' }, 45);
-  }
-  if (!hasTarget) {
-    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: null, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, sl_reason: slReason, reason: 'No trade — no meaningful liquidity target.' }, 55);
-  }
-  if (badZone) {
-    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, rr: rr.rr, risk_amount: rr.risk, reward_amount: rr.reward, sl_reason: slReason, reason: `No trade — price has invalidated the ${direction === 'buy' ? 'demand' : 'supply'} area.` }, 50);
-  }
-  if (!rr.rr || rr.rr < minRr) {
-    return withProgress({ ...base, direction, zone_state: zoneState, stop_loss: stop, target_price: target, zone_quality: zoneQuality, liquidity_quality: liquidityQuality, rr: rr.rr || 0, risk_amount: rr.risk, reward_amount: rr.reward, sl_reason: slReason, target_source: targetSource, reason: `No trade — SL exists, but R:R is only ${Number(rr.rr || 0).toFixed(2)}. Minimum is 1:${minRr}.` }, 70);
-  }
-
-  const zoneScore = zoneState.includes('inside') ? 100 : zoneState.includes('near') ? 82 : 52;
-  const biasScore = clamp(Number(base.bias_score || 0), 0, 100);
-  const structScore = clamp(Number(base.structure_score || 0), 0, 100);
-  const rrScore = clamp((rr.rr / 4) * 100, 50, 100);
-  let score = (biasScore * 0.26) + (structScore * 0.26) + (zoneQuality * 0.16) + (liquidityQuality * 0.16) + (zoneScore * 0.10) + (rrScore * 0.06);
-  score = clamp(score, 0, 100);
-
-  const status = zoneState.includes('inside') || zoneState.includes('near') ? 'forming' : 'candidate';
-  const area = direction === 'buy' ? 'demand' : 'supply';
-  const reason = status === 'forming'
-    ? `${direction.toUpperCase()} idea forming — SL is clean first, projected R:R from the ${area} confirmation area is ${rr.rr.toFixed(2)}, price is ${zoneState.replaceAll('_', ' ')}. Waiting for live confirmation.`
-    : `${direction.toUpperCase()} candidate — bias and structure agree, ${area} zone and liquidity target are mapped, projected R:R from the ${area} confirmation area is ${rr.rr.toFixed(2)}. Waiting for price to approach the zone.`;
-  const dz = distanceToCorrectZone(base.symbol, direction, base.latest_price, direction === 'buy' ? base.demand_low : base.supply_low, direction === 'buy' ? base.demand_high : base.supply_high);
-
-  return {
-    ...base,
-    direction,
-    status,
-    confluence_score: score,
-    reason,
-    distance_to_zone: dz.distance,
-    distance_to_zone_text: dz.text,
-    zone_state: zoneState,
-    zone_quality: zoneQuality,
-    liquidity_quality: liquidityQuality,
-    target_price: target,
-    stop_loss: stop,
-    risk_amount: rr.risk,
-    reward_amount: rr.reward,
-    rr: rr.rr,
-    planned_entry: plannedEntry,
-    target_source: targetSource,
-    sl_reason: slReason
-  };
-}
-
-async function fetchInputs(supabase, now = new Date()) {
-  const [freshness, livePrices] = await Promise.all([
-    getSourceFreshness(supabase, now),
-    latestLivePrices(supabase)
-  ]);
-  const biasRun = freshness.sources.bias?.run || null;
-  const structureRun = freshness.sources.structure?.run || null;
-  const zonesRun = freshness.sources.zones?.run || null;
-  const liquidityRun = freshness.sources.liquidity?.run || null;
-  const [biasRows, zonesRows, structureRows, liquidityRows] = await Promise.all([
-    rowsForScan(supabase, 'eve_market_scores', biasRun?.id),
-    rowsForScan(supabase, 'eve_zones_market_zones', zonesRun?.id),
-    rowsForScan(supabase, 'eve_structure_market_results', structureRun?.id),
-    rowsForScan(supabase, 'eve_liquidity_market_results', liquidityRun?.id)
-  ]);
-  return {
-    source_freshness: freshness,
-    runs: { biasRun, zonesRun, structureRun, liquidityRun },
-    maps: {
-      bias: mapBySymbol(biasRows),
-      zones: mapBySymbol(zonesRows),
-      structure: mapBySymbol(structureRows),
-      liquidity: mapBySymbol(liquidityRows),
-      live: livePrices
-    }
-  };
-}
-
-async function getCurrentFocus(supabase) {
-  const { data } = await supabase.from('eve_confluence_current_focus').select('*').eq('id', 'current').maybeSingle();
-  return data || null;
-}
-
-async function getIdea(supabase, ideaId) {
-  if (!ideaId) return null;
-  const { data } = await supabase.from('eve_confluence_trade_ideas').select('*').eq('id', ideaId).maybeSingle();
-  return data || null;
-}
-
-function shouldKeepCurrentFocus(current, currentIdea, candidateMap, bestCandidate, now) {
-  if (!current || !current.symbol) return false;
-
-  // Active/armed/forming ideas are managed as a state machine.
-  // A scan must not jump to another asset while an open idea is waiting
-  // for touch, confirmation, TP, or SL.
-  if (currentIdea && currentIdea.status === 'active') return true;
-  if (currentIdea && ['forming', 'armed'].includes(currentIdea.status)) {
-    const expiry = currentIdea.expires_at ? new Date(currentIdea.expires_at).getTime() : 0;
-    return !expiry || expiry > now.getTime();
-  }
-  if (currentIdea && isClosedStatus(currentIdea.status)) return false;
-
-  const currentCandidate = candidateMap[current.symbol];
-  if (!currentCandidate || currentCandidate.status === 'no_trade') return false;
-  const lockUntil = current.lock_until ? new Date(current.lock_until).getTime() : 0;
-  const locked = lockUntil > now.getTime();
-
-  // No early override. If focus is locked, it stays locked until the
-  // timer expires, the idea invalidates/expires, or the user unlocks it.
-  return locked;
-}
-
-async function createOrUpdateIdea(supabase, selected, currentFocus, currentIdea, now, formingTouchMinutes, armedConfirmationMinutes) {
-  if (!selected || !['forming'].includes(selected.status)) return null;
-
-  const alreadyInsideZone = String(selected.zone_state || '').includes('inside');
-  const status = alreadyInsideZone ? 'armed' : 'forming';
-  const expiryMinutes = alreadyInsideZone ? armedConfirmationMinutes : formingTouchMinutes;
-  const expiresAt = addMinutes(now, expiryMinutes);
-
-  const payload = {
-    symbol: selected.symbol,
-    direction: selected.direction,
-    status,
-    execution_type: 'market_after_confirmation',
-    lock_until: expiresAt,
-    formed_at: currentIdea?.formed_at || now.toISOString(),
-    expires_at: expiresAt,
-    forming_price: selected.latest_price,
-    stop_loss: selected.stop_loss,
-    take_profit: selected.target_price,
-    risk_amount: selected.risk_amount,
-    reward_amount: selected.reward_amount,
-    rr: selected.rr,
-    demand_low: selected.demand_low,
-    demand_high: selected.demand_high,
-    supply_low: selected.supply_low,
-    supply_high: selected.supply_high,
-    target_source: selected.target_source,
-    sl_reason: selected.sl_reason,
-    touched_zone: alreadyInsideZone,
-    touched_zone_at: alreadyInsideZone ? now.toISOString() : null,
-    armed_at: alreadyInsideZone ? now.toISOString() : null,
-    confirm_started_at: null,
-    reason: status === 'armed'
-      ? `${selected.direction.toUpperCase()} idea armed — price is already inside the correct zone. Waiting for live confirmation.`
-      : selected.reason,
-    latest_note: status === 'armed'
-      ? 'Zone already touched at formation. Waiting for live reclaim/rejection confirmation. No entry yet.'
-      : 'SL was calculated before this trade idea was allowed. Waiting for price to touch the correct zone.',
-    raw: selected.raw || {},
-    updated_at: now.toISOString()
-  };
-
-  const canReuse = currentIdea && !isClosedStatus(currentIdea.status) && currentIdea.symbol === selected.symbol && currentIdea.direction === selected.direction;
-  const reuseId = selected.memory_idea_id || (canReuse ? currentIdea.id : null);
-  if (reuseId) {
-    const updatePayload = {
-      ...payload,
-      formed_at: selected.memory_formed_at || currentIdea?.formed_at || payload.formed_at,
-      reason: selected.memory_idea_id ? `Saved candidate promoted to ${status.toUpperCase()} after price approached the zone.` : payload.reason,
-      raw: { ...(payload.raw || {}), promoted_from_candidate_memory: Boolean(selected.memory_idea_id) }
-    };
-    const { data, error } = await supabase.from('eve_confluence_trade_ideas').update(updatePayload).eq('id', reuseId).select('*').single();
-    if (error) throw error;
-    if (selected.memory_idea_id) {
-      await supabase.from('eve_confluence_events').insert({
-        event_type: status === 'armed' ? 'candidate_promoted_armed' : 'candidate_promoted_forming',
-        symbol: selected.symbol,
-        idea_id: data.id,
-        message: status === 'armed'
-          ? `${selected.symbol} saved ${selected.direction.toUpperCase()} candidate is armed. Zone touched. Waiting confirmation.`
-          : `${selected.symbol} saved ${selected.direction.toUpperCase()} candidate is forming. Price has approached the zone.`,
-        raw: { zone_state: selected.zone_state, rr: selected.rr }
-      });
-    }
-    return data;
-  }
-
-  const { data, error } = await supabase.from('eve_confluence_trade_ideas').insert({ ...payload, focus_started_at: now.toISOString() }).select('*').single();
-  if (error) throw error;
-  await supabase.from('eve_confluence_events').insert({
-    event_type: status === 'armed' ? 'idea_armed' : 'idea_formed',
-    symbol: selected.symbol,
-    idea_id: data.id,
-    message: status === 'armed'
-      ? `${selected.direction.toUpperCase()} idea armed immediately. Zone touched. Waiting confirmation. SL: ${selected.stop_loss}. TP: ${selected.target_price}. RR: ${selected.rr.toFixed(2)}.`
-      : `${selected.direction.toUpperCase()} idea formed. SL first: ${selected.stop_loss}. TP: ${selected.target_price}. RR: ${selected.rr.toFixed(2)}.`
-  });
-  return data;
-}
-
-async function expireOldIdeas(supabase, now) {
-  const { data: ideas } = await supabase
-    .from('eve_confluence_trade_ideas')
-    .select('*')
-    .in('status', ['forming', 'armed', 'watch_only'])
-    .lt('expires_at', now.toISOString());
-  for (const idea of ideas || []) {
-    const expiredBeforeTouch = idea.status === 'forming' && !idea.touched_zone;
-    const expiredCandidate = idea.status === 'watch_only';
-    const note = expiredCandidate
-      ? 'Saved candidate expired before price pulled back into the correct zone.'
-      : (expiredBeforeTouch
-        ? 'Idea expired before price touched the correct zone.'
-        : 'Idea expired after zone touch but before live confirmation.');
-    await supabase.from('eve_confluence_trade_ideas').update({
-      status: 'expired', outcome: 'expired', completed_at: now.toISOString(), updated_at: now.toISOString(), latest_note: note
-    }).eq('id', idea.id);
-
-    const { data: focus } = await supabase.from('eve_confluence_current_focus').select('idea_id').eq('id', 'current').maybeSingle();
-    if (focus?.idea_id === idea.id) {
-      await supabase.from('eve_confluence_current_focus').upsert({
-        id: 'current',
-        symbol: null,
-        direction: null,
-        status: 'no_trade',
-        idea_id: null,
-        reason: note,
-        railway_symbol: null,
-        railway_status: 'no_focus',
-        last_live_price: null,
-        last_live_at: null,
-        updated_at: now.toISOString()
-      });
-    }
-    await supabase.from('eve_confluence_events').insert({ event_type: 'idea_expired', symbol: idea.symbol, idea_id: idea.id, message: note });
-  }
-}
-
-async function scoreActiveIdeas(supabase, now) {
-  const { data: ideas } = await supabase.from('eve_confluence_trade_ideas').select('*').eq('status', 'active').limit(25);
-  for (const idea of ideas || []) {
-    const { data: live } = await supabase.from('eve_confluence_live_prices').select('*').eq('symbol', idea.symbol).maybeSingle();
-    const price = num(live?.price || idea.last_live_price);
-    if (!price) continue;
-    const won = idea.direction === 'buy' ? price >= Number(idea.take_profit) : price <= Number(idea.take_profit);
-    const lost = idea.direction === 'buy' ? price <= Number(idea.stop_loss) : price >= Number(idea.stop_loss);
-    if (!won && !lost) continue;
-    const status = won ? 'won' : 'lost';
-    const resultR = won ? Number(idea.rr || 0) : -1;
-    await supabase.from('eve_confluence_trade_ideas').update({
-      status,
-      outcome: won ? 'win' : 'loss',
-      result_r: resultR,
-      completed_at: now.toISOString(),
-      last_live_price: price,
-      last_live_at: live?.received_at || now.toISOString(),
-      latest_note: won ? 'Target liquidity reached before SL.' : 'Stop loss reached before target.',
-      updated_at: now.toISOString()
-    }).eq('id', idea.id);
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: null,
-      direction: null,
-      status,
-      idea_id: null,
-      reason: won ? 'Trade idea won. TP reached first.' : 'Trade idea lost. SL reached first.',
-      railway_symbol: null,
-      railway_status: 'no_focus',
-      last_live_price: null,
-      last_live_at: null,
-      updated_at: now.toISOString()
-    });
-    await supabase.from('eve_confluence_events').insert({ event_type: won ? 'idea_won' : 'idea_lost', symbol: idea.symbol, idea_id: idea.id, message: won ? 'Trade idea won. TP reached first.' : 'Trade idea lost. SL reached first.', raw: { price } });
-  }
-}
-
-
-
-function openIdeaStatuses() { return ['watch_only', 'forming', 'armed', 'active']; }
-
-async function getOpenIdeas(supabase) {
-  const { data, error } = await supabase
-    .from('eve_confluence_trade_ideas')
-    .select('*')
-    .in('status', openIdeaStatuses())
-    .order('created_at', { ascending: false });
-  if (error) return [];
-  return data || [];
-}
-
-function ideaKey(symbol, direction) { return `${symbol}|${direction}`; }
-
-function oppositeBiasForIdea(direction, biasRow) {
-  const score = displayedPercent(num(biasRow?.score ?? biasRow?.bias_score) || 0);
-  const b = biasRow?.bias;
-  if (!b || score < 58) return false;
-  return direction === 'buy' ? isBearish(b) : isBullish(b);
-}
-
-function oppositeStructureForIdea(direction, structureRow) {
-  const s = structureRow?.structure_bias;
-  if (!s) return false;
-  return direction === 'buy' ? isBearish(s) : isBullish(s);
-}
-
-function zoneStateFromIdea(idea, price) {
-  if (!price) return 'waiting_for_price';
-  if (idea.direction === 'buy') return classifyBuyZone(price, num(idea.demand_low), num(idea.demand_high), idea.symbol);
-  return classifySellZone(price, num(idea.supply_low), num(idea.supply_high), idea.symbol);
-}
-
-function memoryScore(idea, zoneState) {
-  const savedScore = num(idea.raw?.v11_candidate?.confluence_score ?? idea.raw?.confluence_score);
-  const base = Number.isFinite(savedScore) ? savedScore : clamp(55 + (Number(idea.rr || 0) * 6), 55, 88);
-  if (zoneState.includes('inside')) return clamp(base + 12, 0, 100);
-  if (zoneState.includes('near')) return clamp(base + 7, 0, 100);
-  return clamp(base, 0, 100);
-}
-
-function savedCandidateAsset(idea, market, data, minRr) {
-  const { bias, zones, structure, liquidity, live } = data;
-  const price = pickPrice(idea.symbol, live, bias, zones, structure, liquidity) || num(idea.last_live_price) || num(idea.forming_price);
-  const zoneState = zoneStateFromIdea(idea, price);
-  const status = zoneState.includes('inside') || zoneState.includes('near') ? 'forming' : 'candidate';
-  const score = memoryScore(idea, zoneState);
-  const snap = idea.raw?.v11_candidate || {};
-  const currentBiasScore = displayedPercent(num(bias?.score ?? bias?.bias_score) || 0);
-  const snapshotText = snap.bias_score ? `${Math.round(Number(snap.bias_score))}% ${snap.bias || idea.direction}` : `${idea.direction.toUpperCase()} snapshot`;
-  const currentBiasText = bias ? `${currentBiasScore}% ${bias.bias || ''}`.trim() : 'waiting';
-  const area = idea.direction === 'buy' ? 'demand' : 'supply';
-  const waitingReason = `${idea.direction.toUpperCase()} candidate saved — Bias gate opened at ${snapshotText}. Current bias is ${currentBiasText}. Bias may cool during the retrace; candidate stays valid unless bias/structure flips, zone fails, target is taken, or expiry hits. Waiting for pullback into ${area}.`;
-  const formingReason = `${idea.direction.toUpperCase()} saved candidate is now ${zoneState.replaceAll('_', ' ')}. Bias snapshot remains valid. Waiting for live ${idea.direction === 'buy' ? 'demand reclaim' : 'supply rejection'} confirmation.`;
-  const dz = distanceToCorrectZone(idea.symbol, idea.direction, price, idea.direction === 'buy' ? idea.demand_low : idea.supply_low, idea.direction === 'buy' ? idea.demand_high : idea.supply_high);
-
-  return {
-    symbol: idea.symbol,
-    display_name: market?.display_name || idea.symbol,
-    asset_class: market?.asset_class || (idea.symbol === 'XAU/USD' ? 'metal' : idea.symbol === 'BTC/USD' ? 'crypto' : 'forex'),
-    is_open: true,
-    latest_price: price,
-    bias: bias?.bias || snap.bias || null,
-    bias_score: num(bias?.score ?? bias?.bias_score) || snap.bias_score || 0,
-    structure_bias: structure?.structure_bias || snap.structure_bias || null,
-    structure_score: num(structure?.score) || snap.structure_score || 0,
-    demand_low: num(idea.demand_low),
-    demand_high: num(idea.demand_high),
-    supply_low: num(idea.supply_low),
-    supply_high: num(idea.supply_high),
-    direction: idea.direction,
-    status,
-    confluence_score: score,
-    reason: status === 'forming' ? formingReason : waitingReason,
-    distance_to_zone: dz.distance,
-    distance_to_zone_text: dz.text,
-    stop_loss: num(idea.stop_loss),
-    target_price: num(idea.take_profit),
-    risk_amount: num(idea.risk_amount),
-    reward_amount: num(idea.reward_amount),
-    rr: num(idea.rr) || 0,
-    zone_state: zoneState,
-    zone_quality: snap.zone_quality || null,
-    liquidity_quality: snap.liquidity_quality || null,
-    target_source: idea.target_source,
-    sl_reason: idea.sl_reason,
-    planned_entry: idea.direction === 'buy' ? num(idea.demand_high) : num(idea.supply_low),
-    memory_idea_id: idea.id,
-    memory_formed_at: idea.formed_at || null,
-    raw: { ...(idea.raw || {}), memory_idea_id: idea.id, memory_status: idea.status, current_bias: bias || null, current_structure: structure || null, current_zone_state: zoneState }
-  };
-}
-
-function mergeMemoryAssets(assets, memoryAssets) {
-  const priority = { active: 6, armed: 5, forming: 4, candidate: 3, watch_only: 2, no_trade: 0 };
-  const map = Object.fromEntries((assets || []).map((a) => [a.symbol, a]));
-  for (const m of memoryAssets || []) {
-    const existing = map[m.symbol];
-    const ep = priority[existing?.status] || 0;
-    const mp = priority[m.status] || 0;
-    if (!existing || mp > ep || (mp === ep && Number(m.confluence_score || 0) > Number(existing.confluence_score || 0))) {
-      map[m.symbol] = m;
-    }
-  }
-  return MARKETS.map((market) => map[market.symbol]).filter(Boolean);
-}
-
-function savedCandidateInvalidation(idea, data, price, minRr) {
-  const { bias, structure } = data;
-  if (!price) return null;
-  const direction = idea.direction;
-  if (oppositeBiasForIdea(direction, bias)) return `Candidate invalidated — current Bias has flipped against the saved ${direction.toUpperCase()} idea.`;
-  if (oppositeStructureForIdea(direction, structure)) return `Candidate invalidated — current Structure has flipped against the saved ${direction.toUpperCase()} idea.`;
-  if (direction === 'buy' && price <= Number(idea.stop_loss)) return 'Candidate invalidated — price reached the saved buy invalidation/SL before entry.';
-  if (direction === 'sell' && price >= Number(idea.stop_loss)) return 'Candidate invalidated — price reached the saved sell invalidation/SL before entry.';
-  if (direction === 'buy' && price >= Number(idea.take_profit) && !idea.touched_zone) return 'Candidate expired — upside target liquidity was taken before the pullback entry formed.';
-  if (direction === 'sell' && price <= Number(idea.take_profit) && !idea.touched_zone) return 'Candidate expired — downside target liquidity was taken before the pullback entry formed.';
-  if (Number(idea.rr || 0) < Number(minRr || 2)) return `Candidate invalidated — saved projected R:R is below minimum 1:${minRr}.`;
-  return null;
-}
-
-async function closeSavedCandidate(supabase, idea, now, note, status = 'invalidated_before_entry') {
-  await supabase.from('eve_confluence_trade_ideas').update({
-    status,
-    outcome: status === 'expired' ? 'expired' : 'invalidated_before_entry',
-    completed_at: now.toISOString(),
-    result_r: 0,
-    latest_note: note,
-    updated_at: now.toISOString()
-  }).eq('id', idea.id);
-  await supabase.from('eve_confluence_events').insert({ event_type: status, symbol: idea.symbol, idea_id: idea.id, message: note });
-}
-
-async function saveSnapshotCandidates(supabase, assets, openIdeas, now, candidateMemoryMinutes, cooldownBlocks) {
-  const openKeys = new Set((openIdeas || []).map((i) => ideaKey(i.symbol, i.direction)));
-  const candidates = (assets || [])
-    .filter((a) => a.status === 'candidate' && Number(a.confluence_score || 0) >= MIN_SCORE_FOR_FOCUS)
-    .filter((a) => !cooldownBlocks.has(ideaKey(a.symbol, a.direction)))
-    .filter((a) => !openKeys.has(ideaKey(a.symbol, a.direction)));
-
-  for (const a of candidates) {
-    if (await hasRecentSimilarIdea(supabase, a, now, candidateMemoryMinutes)) {
-      continue;
-    }
-    const expiresAt = addMinutes(now, candidateMemoryMinutes);
-    const payload = {
-      symbol: a.symbol,
-      direction: a.direction,
-      status: 'watch_only',
-      execution_type: 'market_after_confirmation',
-      focus_started_at: now.toISOString(),
-      formed_at: null,
-      lock_until: expiresAt,
-      expires_at: expiresAt,
-      forming_price: a.latest_price,
-      stop_loss: a.stop_loss,
-      take_profit: a.target_price,
-      risk_amount: a.risk_amount,
-      reward_amount: a.reward_amount,
-      rr: a.rr,
-      demand_low: a.demand_low,
-      demand_high: a.demand_high,
-      supply_low: a.supply_low,
-      supply_high: a.supply_high,
-      target_source: a.target_source,
-      sl_reason: a.sl_reason,
-      touched_zone: false,
-      reason: `${a.direction.toUpperCase()} candidate saved. Bias gate opened; waiting for retrace into the correct zone.`,
-      latest_note: 'Candidate memory saved. Bias can cool during pullback; only invalidation rules cancel it.',
-      raw: {
-        ...(a.raw || {}),
-        v11_candidate: {
-          version: 'v12_cleanup',
-          confluence_score: a.confluence_score,
-          bias: a.bias,
-          bias_score: a.bias_score,
-          structure_bias: a.structure_bias,
-          structure_score: a.structure_score,
-          zone_quality: a.zone_quality,
-          liquidity_quality: a.liquidity_quality,
-          planned_entry: a.planned_entry,
-          saved_at: now.toISOString(),
-          memory_minutes: candidateMemoryMinutes
-        }
-      },
-      updated_at: now.toISOString()
-    };
-    const { data, error } = await supabase.from('eve_confluence_trade_ideas').insert(payload).select('*').single();
-    if (!error && data) {
-      await supabase.from('eve_confluence_events').insert({
-        event_type: 'candidate_saved',
-        symbol: a.symbol,
-        idea_id: data.id,
-        message: `${a.symbol} ${a.direction.toUpperCase()} candidate saved from Bias ${Math.round(Number(a.bias_score || 0))}%. Waiting for retrace.`,
-        raw: { confluence_score: a.confluence_score, rr: a.rr }
-      });
-    }
-  }
-}
-
-async function buildAndMaintainMemoryAssets(supabase, openIdeas, inputs, minRr, now) {
-  const rows = [];
-  const marketMap = Object.fromEntries(MARKETS.map((m) => [m.symbol, m]));
-  for (const idea of openIdeas || []) {
-    if (idea.status !== 'watch_only') continue;
-    const market = marketMap[idea.symbol] || { symbol: idea.symbol };
-    const data = {
-      bias: inputs.maps.bias[idea.symbol],
-      zones: inputs.maps.zones[idea.symbol],
-      structure: inputs.maps.structure[idea.symbol],
-      liquidity: inputs.maps.liquidity[idea.symbol],
-      live: inputs.maps.live[idea.symbol]
-    };
-    const price = pickPrice(idea.symbol, data.live, data.bias, data.zones, data.structure, data.liquidity) || num(idea.last_live_price) || num(idea.forming_price);
-    const invalidReason = savedCandidateInvalidation(idea, data, price, minRr);
-    if (invalidReason) {
-      const expired = invalidReason.includes('target liquidity was taken');
-      await closeSavedCandidate(supabase, idea, now, invalidReason, expired ? 'expired' : 'invalidated_before_entry');
-      continue;
-    }
-    const row = savedCandidateAsset(idea, market, data, minRr);
-    rows.push(row);
-    if (row.status === 'candidate') {
-      await supabase.from('eve_confluence_trade_ideas').update({
-        last_live_price: row.latest_price || null,
-        last_live_at: row.latest_price ? now.toISOString() : null,
-        latest_note: row.reason,
-        updated_at: now.toISOString()
-      }).eq('id', idea.id);
-    }
-  }
-  return rows;
-}
-
-async function recentCooldownBlocks(supabase, now, cooldownMinutes) {
-  if (!cooldownMinutes || cooldownMinutes <= 0) return new Set();
-  const since = addMinutes(now, -cooldownMinutes);
-  const { data } = await supabase
-    .from('eve_confluence_trade_ideas')
-    .select('symbol,direction,status,completed_at,updated_at')
-    .in('status', ['expired', 'no_trigger', 'invalidated_before_entry'])
-    .gte('completed_at', since);
-  return new Set((data || []).map((i) => `${i.symbol}|${i.direction}`));
-}
-
 async function runConfluenceScan(supabase, source = 'scheduled') {
   const now = new Date();
-  const scannerEnabled = await getSetting(supabase, 'scanner_enabled', true);
-  const minRr = await getSetting(supabase, 'minimum_rr', 2);
-  const focusLockMinutes = await getSetting(supabase, 'focus_lock_minutes', 15);
-  const formingTouchMinutes = await getSetting(supabase, 'forming_touch_minutes', 15);
-  const armedConfirmationMinutes = await getSetting(supabase, 'armed_confirmation_minutes', 30);
-  const cooldownMinutes = await getSetting(supabase, 'same_symbol_direction_cooldown_minutes', 10);
-  const candidateMemoryMinutes = await getSetting(supabase, 'candidate_memory_minutes', DEFAULT_CANDIDATE_MEMORY_MINUTES);
+  const [scannerEnabled, minimumPlannedRr, minimumConfirmedRr, minimumIdeaScore, sourceMaxAgeMinutes, ideaExpiryMinutes, activeExpiryMinutes, cooldownMinutes, minimumDirectionalBias] = await Promise.all([
+    getSetting(supabase, 'scanner_enabled', true),
+    getSetting(supabase, 'minimum_rr', 2),
+    getSetting(supabase, 'minimum_confirmed_rr', 1.5),
+    getSetting(supabase, 'minimum_idea_score', DEFAULT_MIN_IDEA_SCORE),
+    getSetting(supabase, 'source_max_age_minutes', DEFAULT_SOURCE_MAX_AGE_MINUTES),
+    getSetting(supabase, 'idea_expiry_minutes', DEFAULT_IDEA_EXPIRY_MINUTES),
+    getSetting(supabase, 'active_trade_expiry_minutes', DEFAULT_ACTIVE_EXPIRY_MINUTES),
+    getSetting(supabase, 'same_symbol_direction_cooldown_minutes', DEFAULT_COOLDOWN_MINUTES),
+    getSetting(supabase, 'minimum_directional_bias', MIN_DIRECTIONAL_BIAS)
+  ]);
+  const settings = {
+    minimumPlannedRr,
+    minimumConfirmedRr,
+    minimumIdeaScore,
+    sourceMaxAgeMinutes,
+    ideaExpiryMinutes,
+    activeExpiryMinutes,
+    cooldownMinutes,
+    minimumDirectionalBias
+  };
 
   const { data: run, error: runError } = await supabase.from('eve_confluence_scan_runs').insert({
     started_at: now.toISOString(),
-    mode: scannerEnabled ? 'scanning' : 'confluence_off',
+    mode: 'starting',
     scanner_enabled: scannerEnabled,
-    source,
-    assets_checked: 0,
-    assets_scored: 0
-  }).select('*').single();
+    source
+  }).select('*').maybeSingle();
   if (runError) throw runError;
 
   if (!scannerEnabled) {
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: null,
-      direction: null,
-      status: 'confluence_off',
-      idea_id: null,
-      confluence_score: 0,
-      reason: 'Confluence scanner is turned off.',
-      locked_at: null,
-      lock_until: null,
+    await setFocus(supabase, {
+      status: 'engine_off',
+      reason: 'Trade Idea Engine is turned off.',
       last_scan_id: run.id,
-      last_scan_at: now.toISOString(),
-      railway_symbol: null,
-      railway_status: 'no_focus',
-      last_live_price: null,
-      last_live_at: null,
-      raw: {},
-      updated_at: now.toISOString()
-    });
-    await supabase.from('eve_confluence_scan_runs').update({ completed_at: nowIso(), mode: 'confluence_off', notes: 'Scanner off.' }).eq('id', run.id);
-    return { run: { ...run, completed_at: nowIso(), mode: 'confluence_off' }, selected: null, assets: [] };
-  }
-
-  await Promise.all([expireOldIdeas(supabase, now), scoreActiveIdeas(supabase, now)]);
-
-  const inputs = await fetchInputs(supabase, now);
-  const current = await getCurrentFocus(supabase);
-  const currentIdea = await getIdea(supabase, current?.idea_id);
-
-  const hasOpenIdea = currentIdea && ['forming', 'armed', 'active'].includes(currentIdea.status) && !isClosedStatus(currentIdea.status);
-  if (!inputs.source_freshness.allFresh && !hasOpenIdea) {
-    const reason = sourceFreshnessReason(inputs.source_freshness);
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: null,
-      direction: null,
-      status: 'waiting_fresh_sources',
-      idea_id: null,
-      confluence_score: 0,
-      reason,
-      locked_at: null,
-      lock_until: null,
-      last_scan_id: run.id,
-      last_scan_at: now.toISOString(),
-      railway_symbol: null,
-      railway_status: 'no_focus',
-      last_live_price: null,
-      last_live_at: null,
-      raw: { source_freshness: inputs.source_freshness },
-      updated_at: now.toISOString()
+      last_scan_at: now.toISOString()
     });
     const completedAt = nowIso();
-    await supabase.from('eve_confluence_scan_runs').update({
-      completed_at: completedAt,
-      mode: 'waiting_fresh_sources',
-      assets_checked: 0,
-      assets_scored: 0,
-      selected_status: 'waiting_fresh_sources',
-      notes: reason
-    }).eq('id', run.id);
-    return { run: { ...run, completed_at: completedAt, mode: 'waiting_fresh_sources' }, selected: null, idea: null, assets: [], inputs };
+    await supabase.from('eve_confluence_scan_runs').update({ completed_at: completedAt, mode: 'engine_off', notes: 'Scanner disabled.' }).eq('id', run.id);
+    return { run: { ...run, completed_at: completedAt, mode: 'engine_off' }, selected: null, idea: null, assets: [], inputs: null, session: sessionState(now) };
   }
 
-  let assets = MARKETS.map((market) => buildCandidate(market, {
-    bias: inputs.maps.bias[market.symbol],
-    zones: inputs.maps.zones[market.symbol],
-    structure: inputs.maps.structure[market.symbol],
-    liquidity: inputs.maps.liquidity[market.symbol],
-    live: inputs.maps.live[market.symbol]
-  }, minRr));
-
-  const cooldownBlocks = await recentCooldownBlocks(supabase, now, cooldownMinutes);
-  const openIdeasBeforeMemory = await getOpenIdeas(supabase);
-  const currentIdeaLocked = currentIdea && ['forming', 'armed', 'active'].includes(currentIdea.status) && !isClosedStatus(currentIdea.status);
-  if (!currentIdeaLocked) {
-    await saveSnapshotCandidates(supabase, assets, openIdeasBeforeMemory, now, candidateMemoryMinutes, cooldownBlocks);
+  const inputs = await loadInputs(supabase, now, sourceMaxAgeMinutes);
+  let openIdea = await getOpenIdea(supabase);
+  if (openIdea) {
+    const managed = await manageOpenIdea(supabase, openIdea, inputs, now, settings);
+    openIdea = managed.closed ? null : managed.idea;
   }
-  const openIdeasAfterMemory = await getOpenIdeas(supabase);
-  const memoryAssets = await buildAndMaintainMemoryAssets(supabase, openIdeasAfterMemory, inputs, minRr, now);
-  assets = mergeMemoryAssets(assets, memoryAssets);
 
-  const scoreRows = assets.map((a, index) => ({
+  const currentSession = sessionState(now);
+  const assets = MARKETS.map((market) => buildMarketChoice(market, inputs, currentSession.active, settings, now))
+    .sort((a, b) => Number(b.confluence_score || 0) - Number(a.confluence_score || 0));
+
+  const scoreRows = assets.map((asset, index) => ({
     scan_id: run.id,
     rank: index + 1,
-    symbol: a.symbol,
-    display_name: a.display_name,
-    asset_class: a.asset_class,
-    is_open: a.is_open,
-    direction: a.direction,
-    status: a.status,
-    confluence_score: a.confluence_score || 0,
-    reason: a.reason,
-    bias: a.bias,
-    bias_score: a.bias_score,
-    structure_bias: a.structure_bias,
-    structure_score: a.structure_score,
-    zone_quality: a.zone_quality,
-    liquidity_quality: a.liquidity_quality,
-    latest_price: a.latest_price,
-    demand_low: a.demand_low,
-    demand_high: a.demand_high,
-    supply_low: a.supply_low,
-    supply_high: a.supply_high,
-    target_price: a.target_price,
-    stop_loss: a.stop_loss,
-    risk_amount: a.risk_amount,
-    reward_amount: a.reward_amount,
-    rr: a.rr,
-    zone_state: a.zone_state,
-    target_source: a.target_source,
-    sl_reason: a.sl_reason,
-    raw: { ...(a.raw || {}), confluence: { planned_entry: a.planned_entry || null, distance_to_zone: a.distance_to_zone ?? null, distance_to_zone_text: a.distance_to_zone_text || null, source_freshness: inputs.source_freshness || null } }
+    symbol: asset.symbol,
+    display_name: asset.display_name,
+    asset_class: asset.asset_class,
+    is_open: asset.is_open,
+    direction: asset.direction,
+    status: asset.status,
+    strategy_type: asset.strategy_type,
+    session_name: currentSession.active?.name || null,
+    confluence_score: asset.confluence_score || 0,
+    reason: asset.reason,
+    bias: asset.bias,
+    bias_score: asset.bias_score,
+    structure_bias: asset.structure_bias,
+    structure_score: asset.structure_score,
+    zone_quality: asset.zone_quality,
+    liquidity_quality: asset.liquidity_quality,
+    latest_price: asset.latest_price,
+    planned_entry: asset.planned_entry,
+    demand_low: asset.demand_low,
+    demand_high: asset.demand_high,
+    supply_low: asset.supply_low,
+    supply_high: asset.supply_high,
+    target_price: asset.target_price,
+    stop_loss: asset.stop_loss,
+    risk_amount: asset.risk_amount,
+    reward_amount: asset.reward_amount,
+    rr: asset.rr,
+    zone_state: asset.zone_state,
+    target_source: asset.target_source,
+    sl_reason: asset.sl_reason,
+    raw: {
+      ...(asset.raw || {}),
+      source_freshness: Object.fromEntries(Object.entries(inputs.sources).map(([key, value]) => [key, { isFresh: value.isFresh, ageMinutes: value.ageMinutes, run_id: value.run?.id || null }]))
+    }
   }));
-  if (scoreRows.length) await supabase.from('eve_confluence_asset_scores').insert(scoreRows);
-
-  const candidateMap = Object.fromEntries(assets.map((a) => [a.symbol, a]));
-  const ranked = assets
-    .filter((a) => !cooldownBlocks.has(`${a.symbol}|${a.direction}`))
-    .filter((a) => a.status === 'forming' && Number(a.confluence_score) >= MIN_SCORE_FOR_FOCUS)
-    .sort((a, b) => Number(b.confluence_score || 0) - Number(a.confluence_score || 0));
-  const mappedCandidates = assets
-    .filter((a) => !cooldownBlocks.has(`${a.symbol}|${a.direction}`))
-    .filter((a) => a.status === 'candidate' && Number(a.confluence_score) >= MIN_SCORE_FOR_FOCUS)
-    .sort((a, b) => Number(b.confluence_score || 0) - Number(a.confluence_score || 0));
-  let selected = ranked[0] || null;
-
-  // A confirmed/active trade idea must be followed until TP, SL, manual cancel,
-  // or explicit completion. New scans must not clear or replace an active trade.
-  if (currentIdea && currentIdea.status === 'active') {
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: currentIdea.symbol,
-      direction: currentIdea.direction,
-      status: 'active',
-      idea_id: currentIdea.id,
-      confluence_score: current?.confluence_score || 0,
-      reason: 'Active confirmed trade idea — following until TP or SL.',
-      locked_at: current?.locked_at || currentIdea.activated_at || now.toISOString(),
-      lock_until: current?.lock_until || addMinutes(now, focusLockMinutes),
-      last_scan_id: run.id,
-      last_scan_at: now.toISOString(),
-      railway_symbol: currentIdea.symbol,
-      railway_status: 'idea_active',
-      last_live_price: currentIdea.last_live_price || current?.last_live_price || null,
-      last_live_at: currentIdea.last_live_at || current?.last_live_at || null,
-      raw: current?.raw || {},
-      updated_at: now.toISOString()
-    });
-    const completedAt = nowIso();
-    await supabase.from('eve_confluence_scan_runs').update({
-      completed_at: completedAt,
-      mode: 'active_trade_locked',
-      assets_checked: assets.length,
-      assets_scored: ranked.length + mappedCandidates.length,
-      selected_symbol: currentIdea.symbol,
-      selected_direction: currentIdea.direction,
-      selected_status: 'active',
-      notes: 'Existing active trade remains locked until TP or SL.'
-    }).eq('id', run.id);
-    return { run: { ...run, completed_at: completedAt }, selected: candidateMap[currentIdea.symbol] || null, idea: currentIdea, assets, inputs };
+  if (scoreRows.length) {
+    const { error } = await supabase.from('eve_confluence_asset_scores').insert(scoreRows);
+    if (error) throw error;
   }
 
-  if (currentIdea && ['forming', 'armed'].includes(currentIdea.status) && !isClosedStatus(currentIdea.status)) {
-    const selectedStatus = currentIdea.status;
-    const note = selectedStatus === 'armed'
-      ? 'Armed idea remains locked. Zone has touched; waiting for live confirmation.'
-      : 'Forming idea remains locked. Waiting for price to touch the correct zone.';
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: currentIdea.symbol,
-      direction: currentIdea.direction,
-      status: selectedStatus,
-      idea_id: currentIdea.id,
-      confluence_score: current?.confluence_score || 0,
-      reason: currentIdea.latest_note || currentIdea.reason || note,
-      locked_at: current?.locked_at || currentIdea.focus_started_at || currentIdea.formed_at || now.toISOString(),
-      lock_until: currentIdea.expires_at || currentIdea.lock_until || current?.lock_until,
+  let selected = null;
+  let idea = openIdea;
+  let mode = 'outside_session';
+  let note = currentSession.is_open
+    ? `No idea yet in the ${currentSession.active.name} window.`
+    : 'Outside the London and New York idea windows. Existing ideas are still monitored.';
+
+  if (openIdea) {
+    selected = assets.find((asset) => asset.symbol === openIdea.symbol) || null;
+    mode = `tracking_${openIdea.status}`;
+    note = openIdea.latest_note || openIdea.reason;
+    await setFocus(supabase, {
+      symbol: openIdea.symbol,
+      direction: openIdea.direction,
+      status: openIdea.status,
+      idea_id: openIdea.id,
+      confluence_score: openIdea.idea_score || selected?.confluence_score || 0,
+      reason: note,
+      locked_at: openIdea.focus_started_at,
+      lock_until: openIdea.status === 'active' ? openIdea.active_expires_at : openIdea.expires_at,
       last_scan_id: run.id,
       last_scan_at: now.toISOString(),
-      railway_symbol: currentIdea.symbol,
-      railway_status: selectedStatus === 'armed' ? 'idea_armed' : 'focus_selected',
-      last_live_price: currentIdea.last_live_price || current?.last_live_price || null,
-      last_live_at: currentIdea.last_live_at || current?.last_live_at || null,
-      raw: current?.raw || candidateMap[currentIdea.symbol] || {},
-      updated_at: now.toISOString()
+      last_live_price: openIdea.last_live_price,
+      last_live_at: openIdea.last_live_at,
+      raw: { strategy_type: ideaStrategy(openIdea), session_name: openIdea.session_name }
     });
-    const completedAt = nowIso();
-    await supabase.from('eve_confluence_scan_runs').update({
-      completed_at: completedAt,
-      mode: selectedStatus === 'armed' ? 'armed_idea_locked' : 'forming_idea_locked',
-      assets_checked: assets.length,
-      assets_scored: ranked.length + mappedCandidates.length,
-      selected_symbol: currentIdea.symbol,
-      selected_direction: currentIdea.direction,
-      selected_status: selectedStatus,
-      notes: note
-    }).eq('id', run.id);
-    return { run: { ...run, completed_at: completedAt }, selected: candidateMap[currentIdea.symbol] || null, idea: currentIdea, assets, inputs };
-  }
-
-  if (shouldKeepCurrentFocus(current, currentIdea, candidateMap, selected, now)) {
-    selected = candidateMap[current.symbol] || selected;
-  }
-
-  let idea = null;
-  const newFocus = !current || !selected || current.symbol !== selected.symbol || current.direction !== selected.direction || !current.lock_until || new Date(current.lock_until).getTime() <= now.getTime();
-  const lockUntil = selected ? (newFocus ? addMinutes(now, focusLockMinutes) : current.lock_until) : null;
-
-  const noFocusReason = mappedCandidates.length
-    ? `${mappedCandidates.length} candidate setup${mappedCandidates.length === 1 ? '' : 's'} mapped, but price is not close enough to the correct zone yet. No WebSocket focus until FORMING.`
-    : 'No asset currently has clean enough confluence, SL, target and R:R.';
-
-  if (selected) {
-    idea = await createOrUpdateIdea(supabase, selected, current, currentIdea, now, formingTouchMinutes, armedConfirmationMinutes);
-    const focusStatus = idea?.status || selected.status;
-    const focusLockUntil = idea?.expires_at || idea?.lock_until || lockUntil;
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: selected.symbol,
-      direction: selected.direction,
-      status: focusStatus,
-      idea_id: idea?.id || null,
-      confluence_score: selected.confluence_score,
-      reason: idea?.latest_note || idea?.reason || selected.reason,
-      locked_at: newFocus ? now.toISOString() : (current?.locked_at || now.toISOString()),
-      lock_until: focusLockUntil,
-      last_scan_id: run.id,
-      last_scan_at: now.toISOString(),
-      railway_symbol: selected.symbol,
-      railway_status: focusStatus === 'armed' ? 'idea_armed' : 'focus_selected',
-      last_live_price: newFocus ? null : current?.last_live_price,
-      last_live_at: newFocus ? null : current?.last_live_at,
-      raw: selected,
-      updated_at: now.toISOString()
-    });
+  } else if (currentSession.is_open) {
+    const eligible = assets.filter((asset) => ['forming', 'armed'].includes(asset.status) && Number(asset.confluence_score) >= minimumIdeaScore && Number(asset.rr) >= minimumPlannedRr);
+    for (const option of eligible) {
+      if (await recentDuplicate(supabase, option, now, cooldownMinutes)) continue;
+      selected = option;
+      break;
+    }
+    if (selected) {
+      idea = await createIdea(supabase, selected, currentSession.active, now, settings);
+      mode = `idea_${idea.status}`;
+      note = idea.latest_note || idea.reason;
+      await setFocus(supabase, {
+        symbol: idea.symbol,
+        direction: idea.direction,
+        status: idea.status,
+        idea_id: idea.id,
+        confluence_score: idea.idea_score,
+        reason: note,
+        locked_at: idea.focus_started_at,
+        lock_until: idea.expires_at,
+        last_scan_id: run.id,
+        last_scan_at: now.toISOString(),
+        last_live_price: idea.last_live_price,
+        last_live_at: idea.last_live_at,
+        raw: { strategy_type: idea.strategy_type, session_name: idea.session_name }
+      });
+    } else {
+      const top = assets[0];
+      mode = 'session_scanning';
+      note = top?.status === 'candidate'
+        ? `Best plan is ${top.symbol} ${top.direction.toUpperCase()} ${String(top.strategy_type || '').replaceAll('_', ' ')}, but price has not approached entry yet.`
+        : 'No qualifying pullback or breakout-retest idea on this completed M5 scan.';
+      await setFocus(supabase, {
+        status: 'scanning',
+        confluence_score: top?.confluence_score || 0,
+        reason: note,
+        last_scan_id: run.id,
+        last_scan_at: now.toISOString(),
+        raw: { top_candidate: top || null, session: currentSession.active }
+      });
+    }
   } else {
-    await supabase.from('eve_confluence_current_focus').upsert({
-      id: 'current',
-      symbol: null,
-      direction: null,
-      status: mappedCandidates.length ? 'candidate_waiting' : 'no_trade',
-      idea_id: null,
-      confluence_score: mappedCandidates[0]?.confluence_score || 0,
-      reason: noFocusReason,
-      locked_at: null,
-      lock_until: null,
+    await setFocus(supabase, {
+      status: 'outside_session',
+      reason: note,
       last_scan_id: run.id,
       last_scan_at: now.toISOString(),
-      railway_symbol: null,
-      railway_status: 'no_focus',
-      last_live_price: null,
-      last_live_at: null,
-      raw: {},
-      updated_at: now.toISOString()
+      raw: { session_state: currentSession }
     });
   }
 
   const completedAt = nowIso();
   await supabase.from('eve_confluence_scan_runs').update({
     completed_at: completedAt,
-    mode: selected ? 'focus_selected' : 'no_trade',
+    mode,
     assets_checked: assets.length,
-    assets_scored: ranked.length + mappedCandidates.length,
-    selected_symbol: selected?.symbol || null,
-    selected_direction: selected?.direction || null,
-    selected_status: selected?.status || (mappedCandidates.length ? 'candidate_waiting' : 'no_trade'),
-    notes: selected ? selected.reason : (mappedCandidates.length ? noFocusReason : 'No qualifying focus.')
+    assets_scored: assets.filter((asset) => asset.status !== 'no_trade').length,
+    selected_symbol: selected?.symbol || idea?.symbol || null,
+    selected_direction: selected?.direction || idea?.direction || null,
+    selected_status: idea?.status || selected?.status || (currentSession.is_open ? 'scanning' : 'outside_session'),
+    notes: note
   }).eq('id', run.id);
 
-  return { run: { ...run, completed_at: completedAt }, selected, idea, assets, inputs };
+  return {
+    run: { ...run, completed_at: completedAt, mode },
+    selected,
+    idea,
+    assets,
+    inputs,
+    session: currentSession
+  };
 }
 
-async function latestScoredConfluenceRun(supabase) {
+async function latestScoredRun(supabase) {
   const { data, error } = await supabase
     .from('eve_confluence_scan_runs')
     .select('*')
@@ -1178,19 +1132,18 @@ async function latestScoredConfluenceRun(supabase) {
 }
 
 async function getLatestState(supabase) {
-  const [latestRunRow, latestScoredRunRow, focus, liveRows, recentScores, recentIdeas, settings, sourceFreshness] = await Promise.all([
+  const now = new Date();
+  const maxAge = await getSetting(supabase, 'source_max_age_minutes', DEFAULT_SOURCE_MAX_AGE_MINUTES);
+  const [latestRunRow, latestScoredRunRow, focus, recentIdeas, settings, inputs] = await Promise.all([
     latestRun(supabase, 'eve_confluence_scan_runs'),
-    latestScoredConfluenceRun(supabase),
+    latestScoredRun(supabase),
     getCurrentFocus(supabase),
-    supabase.from('eve_confluence_live_prices').select('*'),
-    supabase.from('eve_confluence_asset_scores').select('*').order('created_at', { ascending: false }).limit(60),
-    supabase.from('eve_confluence_trade_ideas').select('*').order('created_at', { ascending: false }).limit(120),
+    supabase.from('eve_confluence_trade_ideas').select('*').order('created_at', { ascending: false }).limit(150),
     supabase.from('eve_confluence_settings').select('*'),
-    getSourceFreshness(supabase, new Date())
+    loadInputs(supabase, now, maxAge)
   ]);
   const scanId = latestRunRow?.assets_checked > 0 ? latestRunRow.id : latestScoredRunRow?.id;
   const assets = scanId ? await rowsForScan(supabase, 'eve_confluence_asset_scores', scanId) : [];
-  const liveMap = Object.fromEntries((liveRows.data || []).map((r) => [r.symbol, r]));
   const currentIdea = await getIdea(supabase, focus?.idea_id);
   return {
     latest_run: latestRunRow,
@@ -1198,81 +1151,68 @@ async function getLatestState(supabase) {
     focus,
     current_idea: currentIdea,
     assets,
-    live_prices: liveMap,
-    recent_scores: recentScores.data || [],
     recent_ideas: recentIdeas.data || [],
-    source_freshness: sourceFreshness,
-    settings: Object.fromEntries((settings.data || []).map((s) => [s.key, s.value])),
-    next_scan_at: nextMinuteSlot()
+    source_freshness: {
+      allFresh: inputs.allFresh,
+      freshCount: inputs.freshCount,
+      max_age_minutes: inputs.max_age_minutes,
+      checked_at: inputs.checked_at,
+      sources: Object.fromEntries(Object.entries(inputs.sources).map(([key, source]) => [key, {
+        key,
+        label: source.label,
+        isFresh: source.isFresh,
+        ageMinutes: source.ageMinutes,
+        status: source.status,
+        run: source.run ? { id: source.run.id, started_at: source.run.started_at, completed_at: source.run.completed_at, mode: source.run.mode } : null,
+        error: source.error || null
+      }]))
+    },
+    settings: Object.fromEntries((settings.data || []).map((row) => [row.key, row.value])),
+    session: sessionState(now),
+    next_scan_at: nextFiveMinuteSlot(now)
   };
 }
 
-function nextMinuteSlot() {
-  const d = new Date();
-  d.setSeconds(0, 0);
-  d.setMinutes(d.getMinutes() + 1);
-  return d.toISOString();
+function groupedStats(rows, keyFn) {
+  const groups = {};
+  for (const row of rows) {
+    const key = keyFn(row) || 'Unknown';
+    groups[key] ||= { name: key, total: 0, wins: 0, losses: 0, avgR: 0, r: [] };
+    groups[key].total += 1;
+    if (row.status === 'won') groups[key].wins += 1;
+    if (row.status === 'lost') groups[key].losses += 1;
+    if (Number.isFinite(Number(row.result_r))) groups[key].r.push(Number(row.result_r));
+  }
+  return Object.values(groups).map((group) => {
+    const closed = group.wins + group.losses;
+    group.winRate = closed ? group.wins / closed * 100 : 0;
+    group.avgR = group.r.length ? group.r.reduce((sum, value) => sum + value, 0) / group.r.length : 0;
+    delete group.r;
+    return group;
+  }).sort((a, b) => b.total - a.total);
 }
 
 function performanceStats(ideas) {
-  const all = ideas || [];
-
-  // v12: saved candidates are not counted as formed trade ideas until
-  // price actually reaches/approaches the correct zone and the idea is
-  // promoted from WATCH ONLY to FORMING/ARMED/ACTIVE. However, closed
-  // candidates still count inside the reason buckets so the stats are honest.
-  const isSavedCandidateOnly = (i) => Boolean(i.raw?.v11_candidate) && !i.formed_at && !i.touched_zone && !i.entry_price;
-  const formed = all.filter((i) => !isSavedCandidateOnly(i) && i.status !== 'watch_only');
-  const armed = all.filter((i) => ['armed', 'active', 'won', 'lost'].includes(i.status) || i.touched_zone);
-  const triggered = all.filter((i) => ['active', 'won', 'lost'].includes(i.status));
-  const wins = all.filter((i) => i.status === 'won').length;
-  const losses = all.filter((i) => i.status === 'lost').length;
-  const expiredBeforeTouch = all.filter((i) => i.status === 'expired' && !i.touched_zone).length;
-  const expiredAfterTouch = all.filter((i) => i.status === 'expired' && i.touched_zone).length;
-  const invalidatedBeforeEntry = all.filter((i) => i.status === 'invalidated_before_entry').length;
-  const rrFailed = all.filter((i) => i.status === 'no_trigger').length;
-  const noTrigger = expiredBeforeTouch + expiredAfterTouch + invalidatedBeforeEntry + rrFailed;
-  const closedCount = wins + losses;
-  const winRate = closedCount ? (wins / closedCount) * 100 : 0;
-  const triggerRate = formed.length ? (triggered.length / formed.length) * 100 : 0;
-  const resultRs = all.map((i) => Number(i.result_r)).filter(Number.isFinite);
-  const avgR = resultRs.length ? resultRs.reduce((a, b) => a + b, 0) / resultRs.length : 0;
-
-  const byAsset = {};
-  for (const i of all) {
-    if (isSavedCandidateOnly(i) && i.status === 'watch_only') continue;
-    byAsset[i.symbol] ||= { symbol: i.symbol, total: 0, wins: 0, losses: 0, winRate: 0, avgR: 0, r: [] };
-    byAsset[i.symbol].total++;
-    if (i.status === 'won') byAsset[i.symbol].wins++;
-    if (i.status === 'lost') byAsset[i.symbol].losses++;
-    if (Number.isFinite(Number(i.result_r))) byAsset[i.symbol].r.push(Number(i.result_r));
-  }
-  for (const row of Object.values(byAsset)) {
-    const denom = row.wins + row.losses;
-    row.winRate = denom ? (row.wins / denom) * 100 : 0;
-    row.avgR = row.r.length ? row.r.reduce((a, b) => a + b, 0) / row.r.length : 0;
-    delete row.r;
-  }
-  const assetRows = Object.values(byAsset).sort((a, b) => b.winRate - a.winRate || b.total - a.total);
-
+  const all = (ideas || []).filter((idea) => (idea.strategy_type || idea.raw?.trade_engine?.strategy_type) !== 'legacy');
+  const wins = all.filter((idea) => idea.status === 'won').length;
+  const losses = all.filter((idea) => idea.status === 'lost').length;
+  const active = all.filter((idea) => idea.status === 'active').length;
+  const forming = all.filter((idea) => ['forming', 'armed'].includes(idea.status)).length;
+  const noTrigger = all.filter((idea) => ['no_trigger', 'invalidated_before_entry', 'expired', 'cancelled'].includes(idea.status)).length;
+  const closed = wins + losses;
+  const resultRs = all.map((idea) => Number(idea.result_r)).filter(Number.isFinite);
   return {
-    totalIdeas: formed.length,
-    candidateMemory: all.filter((i) => i.raw?.v11_candidate).length,
-    savedCandidatesOpen: all.filter((i) => i.status === 'watch_only').length,
-    armedIdeas: armed.length,
-    triggeredIdeas: triggered.length,
+    totalIdeas: all.length,
     wins,
     losses,
+    active,
+    forming,
     noTrigger,
-    expiredBeforeTouch,
-    expiredAfterTouch,
-    invalidatedBeforeEntry,
-    rrFailed,
-    active: all.filter((i) => i.status === 'active').length,
-    winRate,
-    triggerRate,
-    avgR,
-    byAsset: assetRows
+    winRate: closed ? wins / closed * 100 : 0,
+    avgR: resultRs.length ? resultRs.reduce((sum, value) => sum + value, 0) / resultRs.length : 0,
+    byAsset: groupedStats(all, (idea) => idea.symbol).map((row) => ({ ...row, symbol: row.name })),
+    byStrategy: groupedStats(all, (idea) => idea.strategy_type || idea.raw?.trade_engine?.strategy_type || 'Unknown'),
+    bySession: groupedStats(all, (idea) => idea.session_name || 'Unknown')
   };
 }
 
@@ -1284,5 +1224,8 @@ module.exports = {
   isOpenIdeaStatus,
   isClosedStatus,
   rrFor,
-  priceDecimals
+  priceDecimals,
+  sessionState,
+  activeSessionAt,
+  buildMarketChoice
 };

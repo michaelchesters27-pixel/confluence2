@@ -8,9 +8,9 @@ exports.handler = async function(event) {
     const supabase = getSupabase();
     const state = await getLatestState(supabase);
     const stats = performanceStats(state.recent_ideas || []);
-    return ok({ ...state, performance: stats, railway_public_url: process.env.RAILWAY_PUBLIC_URL || null });
+    return ok({ ...state, performance: stats });
   } catch (err) {
     console.error(err);
-    return bad(500, err.message || 'Could not load latest confluence results');
+    return bad(500, err.message || 'Could not load EVE Trade Idea Engine results');
   }
 };

@@ -1,134 +1,38 @@
-EVE CONFLUENCE DEPLOY CHECKLIST
+EVE TRADE IDEA ENGINE v13 - COMPLETE DEPLOY CHECKLIST
 
-PART 1 - SUPABASE
+GITHUB
+[ ] Open the existing confluence2 repository.
+[ ] Delete the old repository files.
+[ ] Upload every file and folder from this complete ZIP.
+[ ] Confirm there is no railway folder.
+[ ] Commit the changes.
 
-1. Open the same Supabase project used by EVE Bias, Zones, Structure and Liquidity.
+SUPABASE
+[ ] Open the same Supabase project used by Bias, Zones, Structure and Liquidity.
+[ ] Open supabase/EVE_FULL_SUPABASE_SETUP.sql from this ZIP.
+[ ] Copy the complete SQL into Supabase SQL Editor.
+[ ] Run it once.
+[ ] Confirm it finishes without an error.
 
-2. Go to SQL Editor.
+NETLIFY
+[ ] Keep the existing Netlify site connected to confluence2.
+[ ] Build command: npm run build
+[ ] Publish directory: public
+[ ] Functions directory: netlify/functions
+[ ] Keep SUPABASE_URL.
+[ ] Keep SUPABASE_SERVICE_ROLE_KEY.
+[ ] Keep EVE_ADMIN_PASSWORD.
+[ ] Delete RAILWAY_PUBLIC_URL.
+[ ] Trigger a fresh deploy.
 
-3. Open:
-   supabase/eve-confluence-schema.sql
+RAILWAY
+[ ] Disable or delete the old Railway service.
 
-4. Copy all SQL.
-
-5. Run it.
-
-This creates separate Confluence tables. It does not delete or change your other EVE tables.
-
-
-PART 2 - NETLIFY
-
-1. Create a new Netlify site from the GitHub repo.
-
-2. Build settings:
-
-Base directory:
-Leave blank / Not set
-
-Build command:
-npm run build
-
-Publish directory:
-public
-
-Functions directory:
-netlify/functions
-
-3. Add these Netlify environment variables:
-
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-EVE_ADMIN_PASSWORD
-RAILWAY_PUBLIC_URL
-
-RAILWAY_PUBLIC_URL can be added after Railway is deployed.
-
-4. Deploy Netlify.
-
-5. Open the EVE Confluence site.
-
-6. Press Set / Change Admin Password and enter your EVE_ADMIN_PASSWORD.
-
-7. Press Scan Now after the other EVE scanners have recent results.
-
-
-PART 3 - RAILWAY
-
-1. Create a new Railway project.
-
-2. Deploy from the same GitHub repo.
-
-3. Railway root directory:
-railway
-
-4. Start command:
-npm start
-
-5. Add these Railway variables:
-
-TWELVEDATA_API_KEY
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-
-6. Deploy.
-
-7. Open Railway logs.
-
-You should see:
-EVE Confluence Railway hub listening on ...
-
-When Confluence picks an asset, Railway subscribes only to that one asset.
-
-
-PART 4 - TEST ORDER
-
-1. Make sure Bias has scanned.
-2. Make sure Zones has scanned.
-3. Make sure Structure has scanned.
-4. Make sure Liquidity has scanned.
-5. Open EVE Confluence.
-6. Press Scan Now.
-7. Check if one focus asset appears.
-8. Deploy Railway.
-9. Watch live price update.
-10. Press Idea Stats after ideas start forming/closing.
-
-
-V5 PATCH NOTE
-
-Before deploying v5, run this patch in Supabase:
-
-```text
-supabase/v5-state-machine-patch.sql
-```
-
-It safely patches the existing tables by adding:
-
-- armed status
-- armed_at
-- confirm_started_at
-- forming_touch_minutes setting
-- armed_confirmation_minutes setting
-- confirmation_hold_seconds setting
-- same_symbol_direction_cooldown_minutes setting
-
-Then deploy Netlify and Railway from the updated GitHub repo.
-
-
-V6 9-ASSET PATCH
-- Confluence now scores only: EUR/USD, GBP/USD, AUD/USD, USD/JPY, USD/CAD, EUR/JPY, GBP/JPY, XAU/USD, BTC/USD.
-- XAG/USD, ETH/USD and SOL/USD removed from new Confluence selection.
-- v5 forming/armed/active state-machine logic remains in place.
-- Run supabase/v6-9assets-confluence-patch.sql once after deploy.
-
-
-## v8 admin button update
-- Main page admin controls are hidden behind a small fixed Admin button.
-- Admin panel contains Idea Stats, Scan Now, Unlock Focus, Turn Confluence On/Off, and Set/Change Admin Password.
-- Confluence asset list is hard-filtered to 9 assets: EUR/USD, GBP/USD, AUD/USD, USD/JPY, USD/CAD, EUR/JPY, GBP/JPY, XAU/USD, BTC/USD.
-
-
-V8 ADMIN GATE:
-- Pressing the small Admin button now prompts for the EVE admin password before any admin controls are shown.
-- Idea Stats is now also protected by the admin password.
-- Password is kept only for the current browser tab session after a successful prompt.
+TEST
+[ ] Open the Netlify URL.
+[ ] Confirm the four scanner freshness cards load.
+[ ] Confirm all 12 markets appear.
+[ ] Open Admin using EVE_ADMIN_PASSWORD.
+[ ] Press Scan Now.
+[ ] Confirm market scores still show outside the idea windows.
+[ ] During London or New York hours, confirm EVE can create a Pullback or Breakout & Retest idea.
