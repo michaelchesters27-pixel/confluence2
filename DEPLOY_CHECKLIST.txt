@@ -1,4 +1,4 @@
-EVE CONFLUENCE v14.2 - DEPLOY CHECKLIST
+EVE CONFLUENCE v14.3 - DEPLOY CHECKLIST
 
 SUPABASE FIRST
 [ ] Open the same Supabase project used by EVE Bias, Zones, Structure and Liquidity.
@@ -36,7 +36,7 @@ RAILWAY
 [ ] Keep SUPABASE_SERVICE_ROLE_KEY.
 [ ] Confirm deployment is successful.
 [ ] Open your Railway public URL followed by /health
-[ ] Confirm ok is true and version is 14.
+[ ] Confirm ok is true and version is 14.3.
 
 TEST
 [ ] Open the Netlify dashboard.
@@ -49,4 +49,4 @@ TEST
 [ ] During London or New York hours, confirm one qualifying focus can be created.
 [ ] Confirm Railway switches to that symbol only.
 [ ] Confirm the idea moves FORMING -> GET READY -> ACTIVE when the zone/retest reacts.
-[ ] Confirm an ACTIVE idea stays locked until TP, SL, TP, SL, time-exit or manual close.
+[ ] Confirm an ACTIVE idea stays locked until TP, SL, time-exit or manual close.

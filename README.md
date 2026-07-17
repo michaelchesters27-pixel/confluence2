@@ -1,10 +1,17 @@
-# EVE Confluence v14.2
+# EVE Confluence v14.3
 
 This is the complete GitHub-ready replacement for the existing `confluence2` repository.
 
 There are no patch files. Replace the repository contents with this project.
 
-## What v14.2 does
+## v14.3 live-status and plan-safety fixes
+
+- Railway activity is inferred from fresh Supabase live-price updates when Netlify cannot reach the Railway `/health` endpoint directly. The dashboard no longer calls a working service `OFFLINE`.
+- `REST FALLBACK` is shown as a degraded but online state, distinct from a live WebSocket feed.
+- Zero, negative, wrong-side and absurd target plans are rejected before ranking or activation.
+- Planned R:R must be between the configured minimum and `maximum_planned_rr` (default 1:25). This removes malformed examples such as a zero Gold target and 1:1785 R:R.
+
+## What v14.3 does
 
 EVE keeps the four existing scanners separate:
 
@@ -36,7 +43,7 @@ The old Confluence decision layer misunderstood the live Bias table in two ways:
 - Bearish `bias_score` values are negative by design. The old code clamped them to zero, so strong bearish markets could never qualify.
 - Bias statuses such as `Good watch` and `Watch only` were treated as a prohibition simply because they contained the word `watch`.
 
-v14.2 uses the absolute directional strength, keeps the separate Bias quality score, and only excludes genuinely unusable states such as `Avoid`, `Closed`, `Stale` or `Error`.
+v14.3 uses the absolute directional strength, keeps the separate Bias quality score, and only excludes genuinely unusable states such as `Avoid`, `Closed`, `Stale` or `Error`.
 
 ## Entry model
 
@@ -85,11 +92,13 @@ No new focus is selected outside these windows. Any existing idea continues live
 
 ## Supabase
 
-Run the one complete file:
+For an existing v14.2 deployment, this v14.3 upgrade is code-only: **do not rerun the SQL**.
+
+For a brand-new installation, run the one complete file once:
 
 `supabase/EVE_FULL_SUPABASE_SETUP.sql`
 
-It preserves historical Confluence rows, adds the v14.2 live-management fields and resets unfinished old ideas as cancelled.
+It preserves historical Confluence rows, adds the live-management fields and resets unfinished old ideas as cancelled.
 
 ## Netlify variables
 

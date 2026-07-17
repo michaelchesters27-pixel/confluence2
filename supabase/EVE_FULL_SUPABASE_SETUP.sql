@@ -380,23 +380,24 @@ create index if not exists eve_confluence_events_created_idx
 
 insert into public.eve_confluence_settings (key, value, updated_at, changed_by)
 values
-  ('scanner_enabled', 'true'::jsonb, now(), 'v14_full_setup'),
-  ('minimum_rr', '2'::jsonb, now(), 'v14_full_setup'),
-  ('minimum_idea_score', '58'::jsonb, now(), 'v14_full_setup'),
-  ('minimum_directional_bias', '48'::jsonb, now(), 'v14_full_setup'),
-  ('source_max_age_minutes', '20'::jsonb, now(), 'v14_full_setup'),
-  ('idea_expiry_minutes', '90'::jsonb, now(), 'v14_full_setup'),
-  ('armed_confirmation_minutes', '30'::jsonb, now(), 'v14_full_setup'),
-  ('active_trade_expiry_minutes', '360'::jsonb, now(), 'v14_full_setup'),
-  ('same_symbol_direction_cooldown_minutes', '20'::jsonb, now(), 'v14_full_setup'),
-  ('trigger_buffer_multiplier', '0.25'::jsonb, now(), 'v14_full_setup'),
-  ('confirmation_ticks', '2'::jsonb, now(), 'v14_full_setup'),
-  ('confirmation_min_seconds', '2'::jsonb, now(), 'v14_full_setup'),
-  ('max_entry_slippage_risk_fraction', '0.15'::jsonb, now(), 'v14_full_setup')
+  ('scanner_enabled', 'true'::jsonb, now(), 'v14_3_full_setup'),
+  ('minimum_rr', '2'::jsonb, now(), 'v14_3_full_setup'),
+  ('maximum_planned_rr', '25'::jsonb, now(), 'v14_3_full_setup'),
+  ('minimum_idea_score', '58'::jsonb, now(), 'v14_3_full_setup'),
+  ('minimum_directional_bias', '48'::jsonb, now(), 'v14_3_full_setup'),
+  ('source_max_age_minutes', '20'::jsonb, now(), 'v14_3_full_setup'),
+  ('idea_expiry_minutes', '90'::jsonb, now(), 'v14_3_full_setup'),
+  ('armed_confirmation_minutes', '30'::jsonb, now(), 'v14_3_full_setup'),
+  ('active_trade_expiry_minutes', '360'::jsonb, now(), 'v14_3_full_setup'),
+  ('same_symbol_direction_cooldown_minutes', '20'::jsonb, now(), 'v14_3_full_setup'),
+  ('trigger_buffer_multiplier', '0.25'::jsonb, now(), 'v14_3_full_setup'),
+  ('confirmation_ticks', '2'::jsonb, now(), 'v14_3_full_setup'),
+  ('confirmation_min_seconds', '2'::jsonb, now(), 'v14_3_full_setup'),
+  ('max_entry_slippage_risk_fraction', '0.15'::jsonb, now(), 'v14_3_full_setup')
 on conflict (key) do update
 set value = excluded.value,
     updated_at = now(),
-    changed_by = 'v14_full_setup';
+    changed_by = 'v14_3_full_setup';
 
 delete from public.eve_confluence_settings
 where key in (

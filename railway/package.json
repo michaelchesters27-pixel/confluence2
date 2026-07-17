@@ -1,8 +1,8 @@
 {
   "name": "eve-confluence-railway-ws",
-  "version": "14.2.0",
+  "version": "14.3.0",
   "private": true,
-  "description": "Railway single-focus WebSocket manager for EVE Confluence v14",
+  "description": "Railway single-focus WebSocket manager for EVE Confluence v14.3",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

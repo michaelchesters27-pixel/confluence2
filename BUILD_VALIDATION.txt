@@ -1,10 +1,12 @@
-EVE Confluence v14.2 validation
+EVE Confluence v14.3 validation
 
 - Root npm dependency installation: PASSED against public npm registry
 - Railway npm dependency installation: PASSED against public npm registry
 - Engine smoke tests: PASSED
 - Static Netlify build: PASSED
+- JavaScript syntax checks: PASSED
 - Internal OpenAI package registry references: NONE
 - Live Railway deployment URL committed to repository: NONE
-
-v14.2 specifically fixes Netlify's "Exposed secrets detected: RAILWAY_PUBLIC_URL" failure by removing the live Railway URL from repository documentation and examples. Keep the real RAILWAY_PUBLIC_URL only in Netlify environment variables.
+- Zero/negative target regression test: PASSED
+- Maximum planned R:R protection: ENABLED (default 1:25)
+- Railway health fallback through fresh Supabase live updates: ENABLED

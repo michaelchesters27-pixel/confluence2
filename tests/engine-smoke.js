@@ -90,6 +90,7 @@ const inputs = {
 const settings = {
   minimumDirectionalBias: 48,
   minimumPlannedRr: 2,
+  maximumPlannedRr: 25,
   triggerBufferMultiplier: 0.25
 };
 
@@ -127,6 +128,16 @@ assert.ok(sellChoice.planned_entry < 2364);
 assert.ok(sellChoice.rr >= 2);
 
 
+
+const malformedTargetInputs = JSON.parse(JSON.stringify(bearishInputs));
+malformedTargetInputs.sources.liquidity.map['XAU/USD'].supply_target_price = 0;
+malformedTargetInputs.sources.zones.map['XAU/USD'].demand_high = null;
+malformedTargetInputs.sources.zones.map['XAU/USD'].demand_low = null;
+const malformedTargetChoice = buildMarketChoice(market, malformedTargetInputs, london, settings, new Date('2026-07-16T07:20:00Z'));
+assert.equal(malformedTargetChoice.target_price, null);
+assert.equal(malformedTargetChoice.rr, 0);
+assert.equal(malformedTargetChoice.status, 'no_trade');
+
 // Regression: bearish EVE bias scores are signed. A negative bias_score must not be clamped to zero,
 // and statuses such as "Good watch" must remain eligible for Confluence.
 assert.ok(sellChoice.confluence_score >= 58);
@@ -140,4 +151,4 @@ assert.equal(performance.completedTrades, 2);
 assert.equal(performance.totalR, 2.4);
 assert.equal(performance.noTrigger, 1);
 
-console.log('EVE Confluence v14 smoke tests passed.');
+console.log('EVE Confluence v14.3 smoke tests passed.');

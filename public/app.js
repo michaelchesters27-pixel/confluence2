@@ -141,10 +141,14 @@ function renderRailway(data) {
   const focus = data.focus || {};
   const idea = data.current_idea;
   let label = 'NOT CONFIGURED';
-  if (health.configured && health.ok) label = String(health.wsStatus || health.status || 'ONLINE').replaceAll('_', ' ').toUpperCase();
-  else if (health.configured) label = String(health.status || 'OFFLINE').toUpperCase();
+  const transport = String(health.wsStatus || health.status || '').toLowerCase();
+  if (health.configured && health.ok) {
+    if (transport === 'live_price') label = 'ONLINE · WEBSOCKET LIVE';
+    else if (transport === 'rest_fallback_price') label = 'ONLINE · REST FALLBACK';
+    else label = String(health.wsStatus || health.status || 'ONLINE').replaceAll('_', ' ').toUpperCase();
+  } else if (health.configured) label = String(health.status || 'OFFLINE').toUpperCase();
   $('railwayState').textContent = label;
-  $('railwayState').className = health.ok ? 'good-text' : 'warning-text';
+  $('railwayState').className = health.ok && !health.degraded ? 'good-text' : 'warning-text';
   const symbol = idea?.symbol || focus.railway_symbol || health.focusSymbol || focus.symbol;
   $('liveFocus').textContent = symbol || 'None';
   $('livePrice').textContent = formatPrice(idea?.last_live_price ?? focus.last_live_price ?? health.lastPrice, symbol);

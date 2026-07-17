@@ -20,7 +20,7 @@ app.use(cors());
 app.use(express.json());
 
 const state = {
-  version: 14,
+  version: '14.3',
   focusSymbol: null,
   focusDirection: null,
   ws: null,
@@ -59,6 +59,20 @@ function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function round(value, decimals = 2) {
   const p = 10 ** decimals;
   return Math.round((Number(value) + Number.EPSILON) * p) / p;
+}
+
+function storedPlanMetrics(idea) {
+  const entry = Number(idea?.planned_entry ?? idea?.entry_price);
+  const stop = Number(idea?.stop_loss);
+  const target = Number(idea?.take_profit);
+  if (![entry, stop, target].every(Number.isFinite) || entry <= 0 || stop <= 0 || target <= 0) {
+    return { valid: false, reason: 'Entry, stop and target must all be positive prices.', entry, stop, target, risk: 0, reward: 0, rr: 0 };
+  }
+  const risk = idea.direction === 'buy' ? entry - stop : stop - entry;
+  const reward = idea.direction === 'buy' ? target - entry : entry - target;
+  const rr = risk > 0 ? reward / risk : 0;
+  const valid = risk > 0 && reward > 0 && rr > 0 && rr <= 25;
+  return { valid, reason: valid ? null : 'Stored entry, stop or target is on the wrong side or produces an unrealistic R:R.', entry, stop, target, risk, reward, rr };
 }
 function redact(obj) {
   try {
@@ -338,6 +352,10 @@ async function processTradeIdea(symbol, price, now) {
 }
 
 function beforeEntryTerminal(idea, price, now) {
+  const plan = storedPlanMetrics(idea);
+  if (!plan.valid) {
+    return { status: 'no_trigger', note: `Malformed trade plan rejected: ${plan.reason}` };
+  }
   if (idea.expires_at && new Date(idea.expires_at).getTime() <= new Date(now).getTime()) {
     return { status: 'expired', note: 'Setup expired before live activation.' };
   }
@@ -465,18 +483,20 @@ async function processArmedIdea(idea, price, now) {
 }
 
 async function activateIdea(idea, triggerPrice, now, extreme) {
-  const plannedEntry = Number(idea.planned_entry);
-  const stop = Number(idea.stop_loss);
-  const target = Number(idea.take_profit);
-  const risk = idea.direction === 'buy' ? plannedEntry - stop : stop - plannedEntry;
-  const reward = idea.direction === 'buy' ? target - plannedEntry : plannedEntry - target;
-  const rr = risk > 0 ? reward / risk : 0;
+  const plan = storedPlanMetrics(idea);
+  const plannedEntry = plan.entry;
+  const stop = plan.stop;
+  const target = plan.target;
+  const risk = plan.risk;
+  const reward = plan.reward;
+  const rr = plan.rr;
   const slippage = idea.direction === 'buy' ? Math.max(0, triggerPrice - plannedEntry) : Math.max(0, plannedEntry - triggerPrice);
   const maxSlippageFraction = Math.max(0, await getSetting('max_entry_slippage_risk_fraction', 0.15));
   const minimumRr = Math.max(1, await getSetting('minimum_rr', 2));
+  const maximumRr = Math.max(minimumRr, await getSetting('maximum_planned_rr', 25));
 
-  if (risk <= 0 || reward <= 0 || rr < minimumRr) {
-    await closeBeforeEntry(idea, triggerPrice, now, 'no_trigger', `Stored trade plan is no longer at least 1:${minimumRr}. No trade.`);
+  if (!plan.valid || risk <= 0 || reward <= 0 || rr < minimumRr || rr > maximumRr) {
+    await closeBeforeEntry(idea, triggerPrice, now, 'no_trigger', `Stored trade plan must be between 1:${minimumRr} and 1:${maximumRr}. No trade.`);
     return;
   }
   if (slippage > risk * maxSlippageFraction) {
@@ -704,7 +724,7 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, async () => {
-  console.log(`EVE Confluence Railway v14 listening on ${PORT}`);
+  console.log(`EVE Confluence Railway v14.3 listening on ${PORT}`);
   await sleep(1500);
   await pollFocusLoop();
   state.focusTimer = setInterval(pollFocusLoop, 3_000);

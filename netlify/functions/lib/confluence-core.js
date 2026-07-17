@@ -99,7 +99,7 @@ function proximityAllowance(symbol, price, low, high) {
 
 function rrFor(direction, entry, stop, target) {
   const e = Number(entry), s = Number(stop), t = Number(target);
-  if (![e, s, t].every(Number.isFinite)) return { risk: null, reward: null, rr: 0 };
+  if (![e, s, t].every(Number.isFinite) || e <= 0 || s <= 0 || t <= 0) return { risk: null, reward: null, rr: 0 };
   const risk = direction === 'buy' ? e - s : s - e;
   const reward = direction === 'buy' ? t - e : e - t;
   if (risk <= 0 || reward <= 0) return { risk, reward, rr: 0 };
@@ -335,7 +335,7 @@ function targetCandidates(direction, entry, data) {
   const list = [];
   function add(value, source, quality = 50) {
     const price = num(value);
-    if (!Number.isFinite(price)) return;
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(e) || e <= 0) return;
     if ((direction === 'buy' && price > e) || (direction === 'sell' && price < e)) list.push({ price, source, quality: clamp(quality, 0, 100) });
   }
   if (direction === 'buy') {
@@ -349,11 +349,13 @@ function targetCandidates(direction, entry, data) {
   return list;
 }
 
-function bestTarget(direction, entry, stop, data, minPlannedRr) {
+function bestTarget(direction, entry, stop, data, minPlannedRr, maxPlannedRr = 25) {
   const targets = targetCandidates(direction, entry, data);
+  const minRr = Math.max(1, Number(minPlannedRr) || 2);
+  const maxRr = Math.max(minRr, Number(maxPlannedRr) || 25);
   for (const target of targets) {
     const rr = rrFor(direction, entry, stop, target.price);
-    if (rr.rr >= minPlannedRr) return { ...target, ...rr };
+    if (rr.rr >= minRr && rr.rr <= maxRr) return { ...target, ...rr };
   }
   return null;
 }
@@ -427,7 +429,7 @@ function buildPullbackOption(market, data, inputs, session, settings) {
     zones: sourceRowUsable(inputs.sources.zones, data.zones) ? data.zones : null,
     liquidity: sourceRowUsable(inputs.sources.liquidity, data.liquidity) ? data.liquidity : null
   };
-  const target = bestTarget(direction, plannedEntry, stop, targetData, settings.minimumPlannedRr);
+  const target = bestTarget(direction, plannedEntry, stop, targetData, settings.minimumPlannedRr, settings.maximumPlannedRr);
   if (!target) return null;
 
   const proximity = classifyZone(direction, market.symbol, data.price, low, high);
@@ -527,7 +529,7 @@ function buildBreakoutOption(market, data, inputs, session, settings, now) {
     zones: sourceRowUsable(inputs.sources.zones, data.zones) ? data.zones : null,
     liquidity: sourceRowUsable(inputs.sources.liquidity, data.liquidity) ? data.liquidity : null
   };
-  const target = bestTarget(direction, plannedEntry, stop, targetData, settings.minimumPlannedRr);
+  const target = bestTarget(direction, plannedEntry, stop, targetData, settings.minimumPlannedRr, settings.maximumPlannedRr);
   if (!target) return null;
 
   const structureScore = clamp(data.structure.score, 0, 100);
@@ -753,9 +755,10 @@ async function rowsForScan(supabase, table, scanId) {
 
 async function runConfluenceScan(supabase, source = 'scheduled') {
   const now = new Date();
-  const [scannerEnabled, minimumPlannedRr, minimumIdeaScore, sourceMaxAgeMinutes, ideaExpiryMinutes, armedExpiryMinutes, activeExpiryMinutes, cooldownMinutes, minimumDirectionalBias, triggerBufferMultiplier] = await Promise.all([
+  const [scannerEnabled, minimumPlannedRr, maximumPlannedRr, minimumIdeaScore, sourceMaxAgeMinutes, ideaExpiryMinutes, armedExpiryMinutes, activeExpiryMinutes, cooldownMinutes, minimumDirectionalBias, triggerBufferMultiplier] = await Promise.all([
     getSetting(supabase, 'scanner_enabled', true),
     getSetting(supabase, 'minimum_rr', 2),
+    getSetting(supabase, 'maximum_planned_rr', 25),
     getSetting(supabase, 'minimum_idea_score', DEFAULT_MIN_IDEA_SCORE),
     getSetting(supabase, 'source_max_age_minutes', DEFAULT_SOURCE_MAX_AGE_MINUTES),
     getSetting(supabase, 'idea_expiry_minutes', DEFAULT_IDEA_EXPIRY_MINUTES),
@@ -767,6 +770,7 @@ async function runConfluenceScan(supabase, source = 'scheduled') {
   ]);
   const settings = {
     minimumPlannedRr,
+    maximumPlannedRr,
     minimumIdeaScore,
     sourceMaxAgeMinutes,
     ideaExpiryMinutes,
