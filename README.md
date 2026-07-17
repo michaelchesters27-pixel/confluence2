@@ -1,10 +1,10 @@
-# EVE Confluence v14.1
+# EVE Confluence v14.2
 
 This is the complete GitHub-ready replacement for the existing `confluence2` repository.
 
 There are no patch files. Replace the repository contents with this project.
 
-## What v14.1 does
+## What v14.2 does
 
 EVE keeps the four existing scanners separate:
 
@@ -36,7 +36,7 @@ The old Confluence decision layer misunderstood the live Bias table in two ways:
 - Bearish `bias_score` values are negative by design. The old code clamped them to zero, so strong bearish markets could never qualify.
 - Bias statuses such as `Good watch` and `Watch only` were treated as a prohibition simply because they contained the word `watch`.
 
-v14.1 uses the absolute directional strength, keeps the separate Bias quality score, and only excludes genuinely unusable states such as `Avoid`, `Closed`, `Stale` or `Error`.
+v14.2 uses the absolute directional strength, keeps the separate Bias quality score, and only excludes genuinely unusable states such as `Avoid`, `Closed`, `Stale` or `Error`.
 
 ## Entry model
 
@@ -89,7 +89,7 @@ Run the one complete file:
 
 `supabase/EVE_FULL_SUPABASE_SETUP.sql`
 
-It preserves historical Confluence rows, adds the v14.1 live-management fields and resets unfinished old ideas as cancelled.
+It preserves historical Confluence rows, adds the v14.2 live-management fields and resets unfinished old ideas as cancelled.
 
 ## Netlify variables
 
@@ -100,11 +100,9 @@ Keep:
 - `EVE_ADMIN_PASSWORD`
 - `RAILWAY_PUBLIC_URL`
 
-`RAILWAY_PUBLIC_URL` should be:
+Set `RAILWAY_PUBLIC_URL` in Netlify to the public URL shown by your Railway service.
 
-`https://confluence1-production.up.railway.app`
-
-unless Railway gives you a different public URL.
+Do not paste that live URL into any GitHub file. Netlify's secret scanner compares environment-variable values against repository content and can block the deployment even though a Railway URL is public.
 
 ## Railway variables
 

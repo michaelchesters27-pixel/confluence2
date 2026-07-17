@@ -1,8 +1,8 @@
 {
   "name": "eve-confluence-zone-reaction-engine",
-  "version": "14.1.0",
+  "version": "14.2.0",
   "private": true,
-  "description": "EVE Confluence v14: scanner selection plus Railway live zone-reaction management",
+  "description": "EVE Confluence v14.2: scanner selection plus Railway live zone-reaction management",
   "scripts": {
     "build": "echo 'EVE Trade Idea Engine static build ready'",
     "test": "node tests/engine-smoke.js"

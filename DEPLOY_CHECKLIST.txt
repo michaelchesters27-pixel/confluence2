@@ -1,4 +1,4 @@
-EVE CONFLUENCE v14.1 - DEPLOY CHECKLIST
+EVE CONFLUENCE v14.2 - DEPLOY CHECKLIST
 
 SUPABASE FIRST
 [ ] Open the same Supabase project used by EVE Bias, Zones, Structure and Liquidity.
@@ -23,7 +23,7 @@ NETLIFY
 [ ] Keep SUPABASE_SERVICE_ROLE_KEY.
 [ ] Keep EVE_ADMIN_PASSWORD.
 [ ] Keep RAILWAY_PUBLIC_URL.
-[ ] RAILWAY_PUBLIC_URL should be https://confluence1-production.up.railway.app unless Railway shows a different URL.
+[ ] RAILWAY_PUBLIC_URL must be the public URL copied from the Railway service. Do not store the live URL in GitHub.
 [ ] Trigger a fresh deploy if Netlify does not start automatically.
 
 RAILWAY
@@ -35,7 +35,7 @@ RAILWAY
 [ ] Keep SUPABASE_URL.
 [ ] Keep SUPABASE_SERVICE_ROLE_KEY.
 [ ] Confirm deployment is successful.
-[ ] Open https://confluence1-production.up.railway.app/health
+[ ] Open your Railway public URL followed by /health
 [ ] Confirm ok is true and version is 14.
 
 TEST
