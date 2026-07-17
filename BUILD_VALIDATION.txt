@@ -1,0 +1,16 @@
+EVE CONFLUENCE v14 - BUILD VALIDATION
+
+Completed before delivery:
+- All JavaScript files passed Node syntax checks.
+- Engine smoke tests passed, including BUY and SELL zone reactions.
+- Regression test passed for signed bearish EVE bias scores and "Good watch" status.
+- Performance tracking test passed for TP/SL and active time/manual exits.
+- Clean npm ci passed for the Netlify root package.
+- Clean npm ci passed for the Railway package.
+- Frontend JavaScript element references were checked against the HTML.
+- Package and lock JSON files parsed successfully.
+- No node_modules or environment secrets are included.
+
+Important:
+- The Supabase SQL was statically reviewed but was not executed against your live Supabase project.
+- Run supabase/EVE_FULL_SUPABASE_SETUP.sql before deploying the code.

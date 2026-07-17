@@ -3,7 +3,8 @@ const $ = (id) => document.getElementById(id);
 const state = {
   data: null,
   adminPassword: sessionStorage.getItem('eve_admin_password_session') || '',
-  loading: false
+  loading: false,
+  refreshTimer: null
 };
 
 function escapeHtml(value) {
@@ -37,6 +38,7 @@ function formatTime(value, options = {}) {
     month: options.day ? 'short' : undefined,
     hour: '2-digit',
     minute: '2-digit',
+    second: options.seconds ? '2-digit' : undefined,
     hour12: false
   }).format(date);
 }
@@ -46,22 +48,26 @@ function statusLabel(status) {
     no_trade: 'NO SETUP',
     candidate: 'WATCHING',
     forming: 'SETUP FORMING',
-    armed: 'ENTRY AREA TOUCHED',
+    armed: 'GET READY',
     active: 'ACTIVE',
     won: 'TP HIT',
     lost: 'SL HIT',
+    closed: 'CLOSED',
     no_trigger: 'NO TRIGGER',
     invalidated_before_entry: 'INVALIDATED',
     expired: 'EXPIRED',
     cancelled: 'CANCELLED',
     outside_session: 'OUTSIDE SESSION',
     scanning: 'SCANNING',
-    engine_off: 'OFF'
+    engine_off: 'OFF',
+    waiting: 'WAITING'
   };
   return labels[status] || String(status || 'WAITING').replaceAll('_', ' ').toUpperCase();
 }
 
 function strategyLabel(value) {
+  if (value === 'zone_reaction') return 'Zone Reaction';
+  if (value === 'broken_level_retest') return 'Broken Level Retest';
   if (value === 'pullback') return 'Pullback into Zone';
   if (value === 'breakout_retest') return 'Breakout & Retest';
   return value ? String(value).replaceAll('_', ' ') : '--';
@@ -92,12 +98,12 @@ function renderSession(data) {
     strip.classList.add('open');
     $('sessionState').textContent = session.active.name.toUpperCase();
     $('sessionHeadline').textContent = `${session.active.name} window is open`;
-    $('sessionNote').textContent = `New trade ideas are allowed now. Existing ideas will continue after ${session.active.local_finish}.`;
+    $('sessionNote').textContent = `New focus ideas are allowed now. Railway continues any selected idea after ${session.active.local_finish}.`;
   } else {
     strip.classList.remove('open');
     $('sessionState').textContent = 'CLOSED';
-    $('sessionHeadline').textContent = 'No new ideas outside the high-volume windows';
-    $('sessionNote').textContent = 'London: 08:15–11:00 Europe/London. New York: 08:30–11:00 America/New_York. Open ideas remain monitored.';
+    $('sessionHeadline').textContent = 'No new focus outside the high-volume windows';
+    $('sessionNote').textContent = 'London: 08:15–11:00 Europe/London. New York: 08:30–11:00 America/New_York. Open ideas remain live.';
   }
   const next = session.next;
   $('nextWindow').textContent = next?.at
@@ -124,38 +130,62 @@ function renderSources(data) {
   const fresh = data.source_freshness || {};
   const sources = fresh.sources || {};
   renderSourceCard('sourceBias', sources.bias, 'Direction');
-  renderSourceCard('sourceZones', sources.zones, 'Pullback entry');
-  renderSourceCard('sourceStructure', sources.structure, 'Breakout / retest');
-  renderSourceCard('sourceLiquidity', sources.liquidity, 'Take-profit target');
+  renderSourceCard('sourceZones', sources.zones, 'Reaction area');
+  renderSourceCard('sourceStructure', sources.structure, 'Context / broken level');
+  renderSourceCard('sourceLiquidity', sources.liquidity, 'Sweep and target');
   $('freshSummary').textContent = `${fresh.freshCount || 0}/4 inputs fresh within ${fresh.max_age_minutes || 20} minutes`;
+}
+
+function renderRailway(data) {
+  const health = data.railway_health || {};
+  const focus = data.focus || {};
+  const idea = data.current_idea;
+  let label = 'NOT CONFIGURED';
+  if (health.configured && health.ok) label = String(health.wsStatus || health.status || 'ONLINE').replaceAll('_', ' ').toUpperCase();
+  else if (health.configured) label = String(health.status || 'OFFLINE').toUpperCase();
+  $('railwayState').textContent = label;
+  $('railwayState').className = health.ok ? 'good-text' : 'warning-text';
+  const symbol = idea?.symbol || focus.railway_symbol || health.focusSymbol || focus.symbol;
+  $('liveFocus').textContent = symbol || 'None';
+  $('livePrice').textContent = formatPrice(idea?.last_live_price ?? focus.last_live_price ?? health.lastPrice, symbol);
 }
 
 function tradeCommand(idea, focus) {
   const status = idea?.status || focus?.status;
   const direction = idea?.direction || focus?.direction;
   if (status === 'active') return `${direction === 'buy' ? 'BUY' : 'SELL'} NOW`;
-  if (status === 'armed') return 'WAIT FOR M5';
-  if (status === 'forming') return 'GET READY';
+  if (status === 'armed') return 'GET READY';
+  if (status === 'forming') return 'SETUP FORMING';
   if (status === 'won') return 'TP HIT';
   if (status === 'lost') return 'SL HIT';
   return 'WAIT';
 }
 
+function triggerText(idea, focus, best) {
+  return idea?.raw?.trade_engine?.trigger_needed
+    || focus?.raw?.trigger_needed
+    || best?.raw?.trigger_needed
+    || best?.raw?.trade_engine?.trigger_needed
+    || 'No live trigger selected yet.';
+}
+
 function renderIdea(data) {
   const idea = data.current_idea;
   const focus = data.focus || {};
+  const best = data.best_candidate || {};
   const command = tradeCommand(idea, focus);
   const direction = idea?.direction || focus.direction;
   const status = idea?.status || focus.status || 'waiting';
   const strategy = idea?.strategy_type || focus.raw?.strategy_type;
   const symbol = idea?.symbol || focus.symbol;
 
-  $('ideaTitle').textContent = symbol ? `${symbol} ${String(direction || '').toUpperCase()}` : 'No live trade idea';
+  $('ideaTitle').textContent = symbol ? `${symbol} ${String(direction || '').toUpperCase()}` : 'No live focus idea';
   $('ideaStatus').textContent = statusLabel(status);
   $('ideaStrategy').textContent = strategyLabel(strategy);
   $('tradeCommand').textContent = command;
   $('tradeCommand').className = `trade-command ${status === 'active' ? direction : ''}`;
-  $('ideaReason').textContent = idea?.latest_note || idea?.reason || focus.reason || 'Waiting for the next completed M5 scan.';
+  $('ideaReason').textContent = idea?.latest_note || idea?.reason || focus.reason || 'Waiting for the next scan.';
+  $('triggerNeeded').textContent = triggerText(idea, focus, best);
 
   $('plannedEntry').textContent = formatPrice(idea?.planned_entry, symbol);
   $('currentEntry').textContent = formatPrice(idea?.entry_price ?? idea?.last_live_price ?? focus.last_live_price, symbol);
@@ -165,6 +195,36 @@ function renderIdea(data) {
   $('ideaScore').textContent = Number(idea?.idea_score) ? `${Math.round(Number(idea.idea_score))}%` : (Number(focus.confluence_score) ? `${Math.round(Number(focus.confluence_score))}%` : '--');
   $('ideaSession').textContent = idea?.session_name || '--';
   $('ideaStrategyText').textContent = strategyLabel(strategy);
+  $('bestMove').textContent = Number.isFinite(Number(idea?.best_r)) ? `${Number(idea.best_r).toFixed(2)}R` : '--';
+  $('worstMove').textContent = Number.isFinite(Number(idea?.worst_r)) ? `${Number(idea.worst_r).toFixed(2)}R` : '--';
+  $('ideaRailway').textContent = String(focus.railway_status || data.railway_health?.wsStatus || '--').replaceAll('_', ' ').toUpperCase();
+  $('lastLiveAt').textContent = formatTime(idea?.last_live_at || focus.last_live_at || data.railway_health?.lastPriceAt, { seconds: true });
+}
+
+function renderBestNow(data) {
+  const best = data.best_candidate;
+  const box = $('bestNow');
+  if (!best) {
+    box.innerHTML = '<span>No scored market is available.</span>';
+    return;
+  }
+  const direction = best.direction || 'none';
+  box.innerHTML = `
+    <div class="best-main">
+      <div>
+        <span class="section-kicker">Rank #${escapeHtml(best.rank || 1)}</span>
+        <strong>${escapeHtml(best.symbol)} <em class="${escapeHtml(direction)}">${escapeHtml(String(direction).toUpperCase())}</em></strong>
+        <p>${escapeHtml(best.reason || 'No reason saved.')}</p>
+      </div>
+      <div class="best-score">${Math.round(Number(best.confluence_score || 0))}%</div>
+    </div>
+    <div class="best-details">
+      <div><span>Status</span><strong>${escapeHtml(statusLabel(best.status))}</strong></div>
+      <div><span>Strategy</span><strong>${escapeHtml(strategyLabel(best.strategy_type))}</strong></div>
+      <div><span>Price</span><strong>${formatPrice(best.latest_price, best.symbol)}</strong></div>
+      <div><span>Trigger</span><strong>${formatPrice(best.planned_entry, best.symbol)}</strong></div>
+      <div><span>R:R</span><strong>${Number(best.rr) ? `1:${Number(best.rr).toFixed(2)}` : '--'}</strong></div>
+    </div>`;
 }
 
 function renderMarkets(data) {
@@ -191,7 +251,7 @@ function renderMarkets(data) {
         </div>
         <div class="market-strategy">${escapeHtml(strategyLabel(asset.strategy_type))}</div>
         <div class="market-plan">
-          <div><span>Entry</span><strong>${formatPrice(asset.planned_entry, asset.symbol)}</strong></div>
+          <div><span>Trigger</span><strong>${formatPrice(asset.planned_entry, asset.symbol)}</strong></div>
           <div><span>Price</span><strong>${formatPrice(asset.latest_price, asset.symbol)}</strong></div>
           <div><span>SL</span><strong>${formatPrice(asset.stop_loss, asset.symbol)}</strong></div>
           <div><span>TP / R:R</span><strong>${formatPrice(asset.target_price, asset.symbol)} · ${Number(asset.rr) ? `1:${Number(asset.rr).toFixed(2)}` : '--'}</strong></div>
@@ -204,10 +264,11 @@ function renderMarkets(data) {
 function renderPerformance(data) {
   const stats = data.performance || {};
   $('statIdeas').textContent = stats.totalIdeas || 0;
+  $('statCompleted').textContent = stats.completedTrades || 0;
   $('statWins').textContent = stats.wins || 0;
   $('statLosses').textContent = stats.losses || 0;
   $('statWinRate').textContent = `${Number(stats.winRate || 0).toFixed(1)}%`;
-  $('statAvgR').textContent = `${Number(stats.avgR || 0).toFixed(2)}R`;
+  $('statTotalR').textContent = `${Number(stats.totalR || 0).toFixed(2)}R`;
 }
 
 function render(data) {
@@ -217,9 +278,21 @@ function render(data) {
   $('toggleEngineBtn').textContent = enabled ? 'Turn Engine Off' : 'Turn Engine On';
   renderSession(data);
   renderSources(data);
+  renderRailway(data);
   renderIdea(data);
+  renderBestNow(data);
   renderMarkets(data);
   renderPerformance(data);
+}
+
+function nextRefreshDelay() {
+  const status = state.data?.current_idea?.status || state.data?.focus?.status;
+  return ['forming', 'armed', 'active'].includes(status) ? 10000 : 60000;
+}
+
+function scheduleRefresh() {
+  clearTimeout(state.refreshTimer);
+  state.refreshTimer = setTimeout(loadLatest, nextRefreshDelay());
 }
 
 async function loadLatest() {
@@ -235,6 +308,7 @@ async function loadLatest() {
     showToast(error.message || 'Could not load EVE');
   } finally {
     state.loading = false;
+    scheduleRefresh();
   }
 }
 
@@ -287,8 +361,7 @@ async function withButton(button, task) {
   catch (error) { showToast(error.message || 'Action failed'); }
   finally {
     button.disabled = false;
-    if (button.id === 'toggleEngineBtn' && state.data) render(state.data);
-    else button.textContent = original;
+    button.textContent = original;
   }
 }
 
@@ -314,8 +387,10 @@ function performanceTableRows(rows, nameKey) {
       <td>${row.total || 0}</td>
       <td>${row.wins || 0}</td>
       <td>${row.losses || 0}</td>
+      <td>${row.noTrigger || 0}</td>
       <td>${Number(row.winRate || 0).toFixed(1)}%</td>
       <td>${Number(row.avgR || 0).toFixed(2)}R</td>
+      <td>${Number(row.totalR || 0).toFixed(2)}R</td>
     </tr>`).join('');
 }
 
@@ -333,21 +408,22 @@ async function openPerformance() {
     $('performanceBody').innerHTML = `
       <div class="performance-summary">
         <div><span>Ideas</span><strong>${stats.totalIdeas || 0}</strong></div>
+        <div><span>Completed</span><strong>${stats.completedTrades || 0}</strong></div>
         <div><span>Wins</span><strong>${stats.wins || 0}</strong></div>
         <div><span>Losses</span><strong>${stats.losses || 0}</strong></div>
         <div><span>Win Rate</span><strong>${Number(stats.winRate || 0).toFixed(1)}%</strong></div>
-        <div><span>Average R</span><strong>${Number(stats.avgR || 0).toFixed(2)}R</strong></div>
+        <div><span>Total R</span><strong>${Number(stats.totalR || 0).toFixed(2)}R</strong></div>
       </div>
       <div class="performance-table-wrap">
         <table>
-          <thead><tr><th>Market</th><th>Ideas</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Average R</th></tr></thead>
-          <tbody>${performanceTableRows(stats.byAsset, 'symbol') || '<tr><td colspan="6">No results yet.</td></tr>'}</tbody>
+          <thead><tr><th>Market</th><th>Ideas</th><th>Wins</th><th>Losses</th><th>No Trigger</th><th>Win Rate</th><th>Average R</th><th>Total R</th></tr></thead>
+          <tbody>${performanceTableRows(stats.byAsset, 'symbol') || '<tr><td colspan="8">No results yet.</td></tr>'}</tbody>
         </table>
       </div>
       <div class="performance-table-wrap">
         <table>
-          <thead><tr><th>Strategy</th><th>Ideas</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Average R</th></tr></thead>
-          <tbody>${performanceTableRows(stats.byStrategy, 'name') || '<tr><td colspan="6">No results yet.</td></tr>'}</tbody>
+          <thead><tr><th>Strategy</th><th>Ideas</th><th>Wins</th><th>Losses</th><th>No Trigger</th><th>Win Rate</th><th>Average R</th><th>Total R</th></tr></thead>
+          <tbody>${performanceTableRows(stats.byStrategy, 'name') || '<tr><td colspan="8">No results yet.</td></tr>'}</tbody>
         </table>
       </div>`;
     $('performanceModal').classList.remove('hidden');
@@ -385,4 +461,3 @@ $('clearIdeaBtn').addEventListener('click', (event) => withButton(event.currentT
 updateClock();
 setInterval(updateClock, 1000);
 loadLatest();
-setInterval(loadLatest, 60000);

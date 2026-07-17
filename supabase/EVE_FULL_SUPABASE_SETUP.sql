@@ -1,22 +1,20 @@
 -- ============================================================
--- EVE TRADE IDEA ENGINE v13 - COMPLETE SUPABASE SETUP
+-- EVE CONFLUENCE v14 - COMPLETE SUPABASE SETUP
 -- ============================================================
--- This is the ONE complete SQL file for the EVE Trade Idea Engine.
--- It works for a fresh installation and upgrades the existing
--- EVE Confluence tables in the same Supabase project.
+-- Run this ONE file in the same Supabase project used by:
+--   eve_market_scores
+--   eve_zones_market_zones
+--   eve_structure_market_results
+--   eve_liquidity_market_results
 --
--- It does not alter the Bias, Zones, Structure or Liquidity tables.
--- Railway/WebSocket state is removed because v13 uses completed
--- five-minute scanner results only.
+-- Safe for an existing EVE Confluence installation.
+-- Historical rows are preserved. Any unfinished old idea is cancelled
+-- so v14 starts with one clean focus lifecycle.
 -- ============================================================
 
 begin;
 
 create extension if not exists pgcrypto;
-
--- ------------------------------------------------------------
--- Core tables
--- ------------------------------------------------------------
 
 create table if not exists public.eve_confluence_settings (
   key text primary key,
@@ -84,10 +82,11 @@ create table if not exists public.eve_confluence_trade_ideas (
   symbol text not null,
   direction text not null,
   status text not null,
-  strategy_type text,
+  strategy_type text not null default 'legacy',
   session_name text,
   idea_score numeric,
-  execution_type text not null default 'completed_m5_confirmation',
+  execution_type text not null default 'railway_live_zone_reaction_v14',
+
   focus_started_at timestamptz not null default now(),
   lock_until timestamptz,
   formed_at timestamptz,
@@ -98,24 +97,37 @@ create table if not exists public.eve_confluence_trade_ideas (
   expires_at timestamptz,
   active_expires_at timestamptz,
   last_checked_at timestamptz,
+
   planned_entry numeric,
   forming_price numeric,
   entry_price numeric,
+  trigger_price numeric,
+  confirmation_price numeric,
   stop_loss numeric not null,
   take_profit numeric not null,
   risk_amount numeric,
   reward_amount numeric,
   rr numeric not null default 0,
+
   demand_low numeric,
   demand_high numeric,
   supply_low numeric,
   supply_high numeric,
   target_source text,
   sl_reason text,
+
   touched_zone boolean not null default false,
   touched_zone_at timestamptz,
+  touch_extreme_price numeric,
+  confirmation_tick_count int not null default 0,
   last_live_price numeric,
   last_live_at timestamptz,
+
+  max_favourable_price numeric,
+  max_adverse_price numeric,
+  best_r numeric,
+  worst_r numeric,
+
   outcome text,
   result_r numeric,
   reason text,
@@ -139,8 +151,19 @@ create table if not exists public.eve_confluence_current_focus (
   last_scan_at timestamptz,
   last_live_price numeric,
   last_live_at timestamptz,
+  railway_symbol text,
+  railway_status text,
   raw jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now()
+);
+
+create table if not exists public.eve_confluence_live_prices (
+  symbol text primary key,
+  price numeric not null,
+  event_time timestamptz,
+  received_at timestamptz not null default now(),
+  source text not null default 'railway_twelvedata_ws',
+  raw jsonb not null default '{}'::jsonb
 );
 
 create table if not exists public.eve_confluence_events (
@@ -154,13 +177,15 @@ create table if not exists public.eve_confluence_events (
 );
 
 -- ------------------------------------------------------------
--- Complete upgrade safety for existing EVE Confluence installs
+-- Safe upgrades for existing tables
 -- ------------------------------------------------------------
 
-alter table public.eve_confluence_settings
-  add column if not exists changed_by text;
-
 alter table public.eve_confluence_scan_runs
+  add column if not exists completed_at timestamptz,
+  add column if not exists mode text not null default 'starting',
+  add column if not exists scanner_enabled boolean not null default true,
+  add column if not exists source text not null default 'scheduled',
+  add column if not exists assets_checked int not null default 0,
   add column if not exists assets_scored int not null default 0,
   add column if not exists selected_symbol text,
   add column if not exists selected_direction text,
@@ -206,7 +231,7 @@ alter table public.eve_confluence_trade_ideas
   add column if not exists strategy_type text,
   add column if not exists session_name text,
   add column if not exists idea_score numeric,
-  add column if not exists execution_type text not null default 'completed_m5_confirmation',
+  add column if not exists execution_type text not null default 'railway_live_zone_reaction_v14',
   add column if not exists focus_started_at timestamptz not null default now(),
   add column if not exists lock_until timestamptz,
   add column if not exists formed_at timestamptz,
@@ -220,6 +245,8 @@ alter table public.eve_confluence_trade_ideas
   add column if not exists planned_entry numeric,
   add column if not exists forming_price numeric,
   add column if not exists entry_price numeric,
+  add column if not exists trigger_price numeric,
+  add column if not exists confirmation_price numeric,
   add column if not exists risk_amount numeric,
   add column if not exists reward_amount numeric,
   add column if not exists demand_low numeric,
@@ -230,8 +257,14 @@ alter table public.eve_confluence_trade_ideas
   add column if not exists sl_reason text,
   add column if not exists touched_zone boolean not null default false,
   add column if not exists touched_zone_at timestamptz,
+  add column if not exists touch_extreme_price numeric,
+  add column if not exists confirmation_tick_count int not null default 0,
   add column if not exists last_live_price numeric,
   add column if not exists last_live_at timestamptz,
+  add column if not exists max_favourable_price numeric,
+  add column if not exists max_adverse_price numeric,
+  add column if not exists best_r numeric,
+  add column if not exists worst_r numeric,
   add column if not exists outcome text,
   add column if not exists result_r numeric,
   add column if not exists reason text,
@@ -253,10 +286,28 @@ alter table public.eve_confluence_current_focus
   add column if not exists last_scan_at timestamptz,
   add column if not exists last_live_price numeric,
   add column if not exists last_live_at timestamptz,
+  add column if not exists railway_symbol text,
+  add column if not exists railway_status text,
   add column if not exists raw jsonb not null default '{}'::jsonb,
   add column if not exists updated_at timestamptz not null default now();
 
--- Remove constraints temporarily so legacy rows can be normalised safely.
+-- Normalise old rows before recreating constraints.
+update public.eve_confluence_trade_ideas
+set strategy_type = coalesce(nullif(strategy_type, ''), raw->'trade_engine'->>'strategy_type', 'legacy')
+where strategy_type is null or strategy_type = '';
+
+update public.eve_confluence_trade_ideas
+set status = 'cancelled',
+    outcome = 'cancelled',
+    completed_at = coalesce(completed_at, now()),
+    latest_note = 'Closed automatically when EVE Confluence v14 was installed.',
+    updated_at = now()
+where status in ('watch_only', 'forming', 'armed', 'active');
+
+alter table public.eve_confluence_trade_ideas
+  alter column strategy_type set default 'legacy',
+  alter column strategy_type set not null;
+
 alter table public.eve_confluence_scan_runs
   drop constraint if exists eve_confluence_scan_runs_selected_direction_check;
 
@@ -273,23 +324,6 @@ alter table public.eve_confluence_current_focus
   drop constraint if exists eve_confluence_current_focus_id_check,
   drop constraint if exists eve_confluence_current_focus_direction_check;
 
--- Close any unfinished legacy Confluence/Railway ideas before v13 begins.
-update public.eve_confluence_trade_ideas
-set status = 'cancelled',
-    outcome = 'cancelled',
-    completed_at = coalesce(completed_at, now()),
-    latest_note = 'Closed automatically when the complete EVE Trade Idea Engine v13 setup was installed.',
-    updated_at = now()
-where status in ('watch_only', 'forming', 'armed', 'active');
-
-update public.eve_confluence_trade_ideas
-set strategy_type = coalesce(nullif(strategy_type, ''), raw->'trade_engine'->>'strategy_type', 'legacy')
-where strategy_type is null or strategy_type = '';
-
-alter table public.eve_confluence_trade_ideas
-  alter column strategy_type set not null;
-
--- Recreate the final v13 constraints.
 alter table public.eve_confluence_scan_runs
   add constraint eve_confluence_scan_runs_selected_direction_check
   check (selected_direction in ('buy','sell') or selected_direction is null);
@@ -305,25 +339,18 @@ alter table public.eve_confluence_trade_ideas
   check (direction in ('buy','sell')),
   add constraint eve_confluence_trade_ideas_status_check
   check (status in (
-    'forming','armed','active','won','lost','no_trigger',
+    'forming','armed','active','won','lost','closed','no_trigger',
     'invalidated_before_entry','expired','cancelled'
   )),
   add constraint eve_confluence_trade_ideas_outcome_check
   check (outcome in (
-    'win','loss','no_trigger','invalidated_before_entry','expired','cancelled'
+    'win','loss','manual_close','time_exit','break_even','no_trigger','invalidated_before_entry','expired','cancelled'
   ) or outcome is null);
 
 alter table public.eve_confluence_current_focus
   add constraint eve_confluence_current_focus_id_check check (id = 'current'),
   add constraint eve_confluence_current_focus_direction_check
   check (direction in ('buy','sell') or direction is null);
-
--- Railway is not used by v13.
-alter table public.eve_confluence_current_focus
-  drop column if exists railway_symbol,
-  drop column if exists railway_status;
-
-drop table if exists public.eve_confluence_live_prices;
 
 -- ------------------------------------------------------------
 -- Indexes
@@ -348,42 +375,47 @@ create index if not exists eve_confluence_events_created_idx
   on public.eve_confluence_events(created_at desc);
 
 -- ------------------------------------------------------------
--- v13 settings
+-- v14 operating settings
 -- ------------------------------------------------------------
 
 insert into public.eve_confluence_settings (key, value, updated_at, changed_by)
 values
-  ('scanner_enabled', 'true'::jsonb, now(), 'v13_full_setup'),
-  ('minimum_rr', '2'::jsonb, now(), 'v13_full_setup'),
-  ('minimum_confirmed_rr', '1.5'::jsonb, now(), 'v13_full_setup'),
-  ('minimum_idea_score', '60'::jsonb, now(), 'v13_full_setup'),
-  ('minimum_directional_bias', '48'::jsonb, now(), 'v13_full_setup'),
-  ('source_max_age_minutes', '20'::jsonb, now(), 'v13_full_setup'),
-  ('idea_expiry_minutes', '120'::jsonb, now(), 'v13_full_setup'),
-  ('active_trade_expiry_minutes', '360'::jsonb, now(), 'v13_full_setup'),
-  ('same_symbol_direction_cooldown_minutes', '20'::jsonb, now(), 'v13_full_setup')
+  ('scanner_enabled', 'true'::jsonb, now(), 'v14_full_setup'),
+  ('minimum_rr', '2'::jsonb, now(), 'v14_full_setup'),
+  ('minimum_idea_score', '58'::jsonb, now(), 'v14_full_setup'),
+  ('minimum_directional_bias', '48'::jsonb, now(), 'v14_full_setup'),
+  ('source_max_age_minutes', '20'::jsonb, now(), 'v14_full_setup'),
+  ('idea_expiry_minutes', '90'::jsonb, now(), 'v14_full_setup'),
+  ('armed_confirmation_minutes', '30'::jsonb, now(), 'v14_full_setup'),
+  ('active_trade_expiry_minutes', '360'::jsonb, now(), 'v14_full_setup'),
+  ('same_symbol_direction_cooldown_minutes', '20'::jsonb, now(), 'v14_full_setup'),
+  ('trigger_buffer_multiplier', '0.25'::jsonb, now(), 'v14_full_setup'),
+  ('confirmation_ticks', '2'::jsonb, now(), 'v14_full_setup'),
+  ('confirmation_min_seconds', '2'::jsonb, now(), 'v14_full_setup'),
+  ('max_entry_slippage_risk_fraction', '0.15'::jsonb, now(), 'v14_full_setup')
 on conflict (key) do update
 set value = excluded.value,
     updated_at = now(),
-    changed_by = 'v13_full_setup';
+    changed_by = 'v14_full_setup';
 
 delete from public.eve_confluence_settings
 where key in (
+  'minimum_confirmed_rr',
   'focus_lock_minutes',
   'candidate_memory_minutes',
   'forming_touch_minutes',
-  'armed_confirmation_minutes',
   'confirmation_hold_seconds'
 );
 
-insert into public.eve_confluence_current_focus (id, status, reason, confluence_score, raw, updated_at)
+insert into public.eve_confluence_current_focus (
+  id, symbol, direction, status, idea_id, confluence_score, reason,
+  locked_at, lock_until, last_scan_id, last_scan_at,
+  last_live_price, last_live_at, railway_symbol, railway_status, raw, updated_at
+)
 values (
-  'current',
-  'waiting',
-  'EVE Trade Idea Engine v13 installed. Waiting for the next five-minute scan.',
-  0,
-  '{}'::jsonb,
-  now()
+  'current', null, null, 'waiting', null, 0,
+  'EVE Confluence v14 installed. Waiting for the next five-minute scan.',
+  null, null, null, null, null, null, null, 'no_focus', '{}'::jsonb, now()
 )
 on conflict (id) do update
 set symbol = null,
@@ -391,13 +423,15 @@ set symbol = null,
     status = 'waiting',
     idea_id = null,
     confluence_score = 0,
-    reason = 'EVE Trade Idea Engine v13 installed. Waiting for the next five-minute scan.',
+    reason = 'EVE Confluence v14 installed. Waiting for the next five-minute scan.',
     locked_at = null,
     lock_until = null,
     last_scan_id = null,
     last_scan_at = null,
     last_live_price = null,
     last_live_at = null,
+    railway_symbol = null,
+    railway_status = 'no_focus',
     raw = '{}'::jsonb,
     updated_at = now();
 
@@ -410,9 +444,10 @@ alter table public.eve_confluence_scan_runs enable row level security;
 alter table public.eve_confluence_asset_scores enable row level security;
 alter table public.eve_confluence_trade_ideas enable row level security;
 alter table public.eve_confluence_current_focus enable row level security;
+alter table public.eve_confluence_live_prices enable row level security;
 alter table public.eve_confluence_events enable row level security;
 
 commit;
 
--- Netlify uses SUPABASE_SERVICE_ROLE_KEY and therefore bypasses RLS.
+-- Netlify and Railway use SUPABASE_SERVICE_ROLE_KEY and bypass RLS.
 -- Never expose the service role key in browser code or commit it to GitHub.

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#07120f" />
-  <title>EVE Trade Idea Engine</title>
+  <title>EVE Confluence</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -14,12 +14,15 @@
   <main class="shell">
     <header class="hero">
       <div>
-        <div class="eyebrow">Completed M5 decision engine</div>
+        <div class="eyebrow">Zone reaction decision engine</div>
         <h1>EVE</h1>
-        <p class="hero-copy">Bias chooses direction. Zones find pullbacks. Structure finds breakout retests. Liquidity gives the target.</p>
+        <p class="hero-copy">The four scanners choose the strongest opportunity. Railway watches only that one market live, activates one confirmed zone reaction, then follows it until finished.</p>
       </div>
       <div class="status-stack">
         <div class="status-row"><span>Engine</span><strong id="engineState">Loading</strong></div>
+        <div class="status-row"><span>Railway</span><strong id="railwayState">Checking</strong></div>
+        <div class="status-row"><span>Live Focus</span><strong id="liveFocus">None</strong></div>
+        <div class="status-row"><span>Live Price</span><strong id="livePrice">--</strong></div>
         <div class="status-row"><span>Idea Window</span><strong id="sessionState">Checking</strong></div>
         <div class="status-row"><span>London Time</span><strong id="ukClock">--:--</strong></div>
         <div class="status-row"><span>Next Scan</span><strong id="nextScan">--:--</strong></div>
@@ -42,22 +45,22 @@
       <div class="section-heading">
         <div>
           <span class="section-kicker">Scanner inputs</span>
-          <h2>Four engines, separate jobs</h2>
+          <h2>Four engines, one decision</h2>
         </div>
         <small id="freshSummary">Waiting for source data</small>
       </div>
       <div class="source-grid">
         <article class="source-card waiting" id="sourceBias"><span>Bias</span><strong>Waiting</strong><small>Direction</small></article>
-        <article class="source-card waiting" id="sourceZones"><span>Zones</span><strong>Waiting</strong><small>Pullback entry</small></article>
-        <article class="source-card waiting" id="sourceStructure"><span>Structure</span><strong>Waiting</strong><small>Breakout / retest</small></article>
-        <article class="source-card waiting" id="sourceLiquidity"><span>Liquidity</span><strong>Waiting</strong><small>Take-profit target</small></article>
+        <article class="source-card waiting" id="sourceZones"><span>Zones</span><strong>Waiting</strong><small>Reaction area</small></article>
+        <article class="source-card waiting" id="sourceStructure"><span>Structure</span><strong>Waiting</strong><small>Context / broken level</small></article>
+        <article class="source-card waiting" id="sourceLiquidity"><span>Liquidity</span><strong>Waiting</strong><small>Sweep and target</small></article>
       </div>
     </section>
 
     <section class="idea-panel" id="ideaPanel">
       <div class="section-heading">
         <div>
-          <span class="section-kicker">Strongest opportunity</span>
+          <span class="section-kicker">Current focus</span>
           <h2 id="ideaTitle">Waiting for first scan</h2>
         </div>
         <div class="idea-badges">
@@ -69,28 +72,47 @@
       <div class="idea-layout">
         <div class="idea-call">
           <div class="trade-command" id="tradeCommand">WAIT</div>
-          <p id="ideaReason">EVE will only create new ideas inside the London or New York window.</p>
+          <p id="ideaReason">EVE will show exactly what it is watching and what live trigger is still required.</p>
+          <div class="trigger-box">
+            <span>Exact live trigger</span>
+            <strong id="triggerNeeded">--</strong>
+          </div>
         </div>
         <div class="plan-grid">
-          <div><span>Planned Entry</span><strong id="plannedEntry">--</strong></div>
-          <div><span>Current / Entry</span><strong id="currentEntry">--</strong></div>
+          <div><span>Trigger Entry</span><strong id="plannedEntry">--</strong></div>
+          <div><span>Live / Entry</span><strong id="currentEntry">--</strong></div>
           <div><span>Stop Loss</span><strong id="stopLoss">--</strong></div>
           <div><span>Take Profit</span><strong id="takeProfit">--</strong></div>
           <div><span>R:R</span><strong id="ideaRr">--</strong></div>
           <div><span>Idea Score</span><strong id="ideaScore">--</strong></div>
           <div><span>Session</span><strong id="ideaSession">--</strong></div>
           <div><span>Strategy</span><strong id="ideaStrategyText">--</strong></div>
+          <div><span>Best Move</span><strong id="bestMove">--</strong></div>
+          <div><span>Worst Move</span><strong id="worstMove">--</strong></div>
+          <div><span>Railway Status</span><strong id="ideaRailway">--</strong></div>
+          <div><span>Last Live Tick</span><strong id="lastLiveAt">--</strong></div>
         </div>
       </div>
+    </section>
+
+    <section class="best-now-section">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Always visible</span>
+          <h2>Best market now</h2>
+        </div>
+        <small>Even when no idea is created, EVE shows what is closest and why it is waiting.</small>
+      </div>
+      <div id="bestNow" class="best-now-card">Waiting for a scored scan.</div>
     </section>
 
     <section class="opportunities-section">
       <div class="section-heading">
         <div>
-          <span class="section-kicker">All 12 markets</span>
+          <span class="section-kicker">All scanner markets</span>
           <h2>Current opportunities</h2>
         </div>
-        <small>Only the strongest qualifying setup becomes the live idea.</small>
+        <small>Only the strongest qualifying setup becomes the live focus.</small>
       </div>
       <div id="marketGrid" class="market-grid">
         <div class="empty-state">Waiting for results.</div>
@@ -99,10 +121,11 @@
 
     <section class="performance-strip">
       <div><span>Total ideas</span><strong id="statIdeas">0</strong></div>
+      <div><span>Completed trades</span><strong id="statCompleted">0</strong></div>
       <div><span>Wins</span><strong id="statWins">0</strong></div>
       <div><span>Losses</span><strong id="statLosses">0</strong></div>
       <div><span>Win rate</span><strong id="statWinRate">0%</strong></div>
-      <div><span>Average R</span><strong id="statAvgR">0.00R</strong></div>
+      <div><span>Total R</span><strong id="statTotalR">0.00R</strong></div>
       <button id="performanceBtn" type="button">Performance History</button>
     </section>
   </main>
@@ -120,7 +143,7 @@
         <button id="toggleEngineBtn" type="button">Turn Engine Off</button>
         <button id="clearIdeaBtn" class="danger" type="button">Cancel Current Idea</button>
       </div>
-      <p class="modal-note">Scan Now still obeys the London and New York idea windows. Existing ideas continue to be monitored outside the windows.</p>
+      <p class="modal-note">Netlify chooses the focus. Railway alone manages live touch, activation, TP and SL.</p>
     </div>
   </div>
 

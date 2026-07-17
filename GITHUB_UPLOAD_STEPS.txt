@@ -1,27 +1,29 @@
-EVE TRADE IDEA ENGINE v13 - COMPLETE GITHUB DELIVERY
+EVE CONFLUENCE v14 - COMPLETE GITHUB DELIVERY
 
-1. Download the complete ZIP.
+1. Run the one complete Supabase file first:
+   supabase/EVE_FULL_SUPABASE_SETUP.sql
+
 2. Open GitHub.
 3. Open the existing repository: confluence2
-4. Delete the old repository files.
+4. Delete the old repository files and folders.
 5. Upload every file and folder from this ZIP.
 6. Commit the changes.
-7. Netlify will deploy automatically.
+7. Netlify and Railway should deploy automatically from the same repository.
 
-SUPABASE - ONE COMPLETE SQL FILE
-Open Supabase SQL Editor and run:
-
-supabase/EVE_FULL_SUPABASE_SETUP.sql
-
-This one file handles both the existing Confluence installation and a fresh installation.
-There are no patch files in this project.
-
-NETLIFY VARIABLES TO KEEP
+NETLIFY VARIABLES
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 EVE_ADMIN_PASSWORD
-
-OLD VARIABLE TO DELETE
 RAILWAY_PUBLIC_URL
 
-Railway is not used. Disable or delete the old Railway service.
+RAILWAY VARIABLES
+TWELVEDATA_API_KEY
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+
+RAILWAY SETTINGS
+Root directory: railway
+Start command: npm start
+
+DO NOT CREATE A NEW GITHUB REPOSITORY.
+DO NOT RUN OLD PATCH SQL FILES.

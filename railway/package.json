@@ -1,8 +1,8 @@
 {
   "name": "eve-confluence-railway-ws",
-  "version": "1.0.0",
+  "version": "14.0.0",
   "private": true,
-  "description": "Railway WebSocket hub for EVE Confluence selected asset only",
+  "description": "Railway single-focus WebSocket manager for EVE Confluence v14",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,5 +12,8 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

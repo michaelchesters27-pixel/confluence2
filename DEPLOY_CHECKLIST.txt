@@ -1,18 +1,18 @@
-EVE TRADE IDEA ENGINE v13 - COMPLETE DEPLOY CHECKLIST
+EVE CONFLUENCE v14 - DEPLOY CHECKLIST
 
-GITHUB
-[ ] Open the existing confluence2 repository.
-[ ] Delete the old repository files.
-[ ] Upload every file and folder from this complete ZIP.
-[ ] Confirm there is no railway folder.
-[ ] Commit the changes.
-
-SUPABASE
-[ ] Open the same Supabase project used by Bias, Zones, Structure and Liquidity.
+SUPABASE FIRST
+[ ] Open the same Supabase project used by EVE Bias, Zones, Structure and Liquidity.
 [ ] Open supabase/EVE_FULL_SUPABASE_SETUP.sql from this ZIP.
-[ ] Copy the complete SQL into Supabase SQL Editor.
+[ ] Copy the entire SQL into Supabase SQL Editor.
 [ ] Run it once.
 [ ] Confirm it finishes without an error.
+
+GITHUB
+[ ] Open the existing repository: confluence2
+[ ] Delete the old repository files and folders.
+[ ] Upload every file and folder from this complete ZIP.
+[ ] Confirm the railway folder is included.
+[ ] Commit the changes.
 
 NETLIFY
 [ ] Keep the existing Netlify site connected to confluence2.
@@ -22,17 +22,31 @@ NETLIFY
 [ ] Keep SUPABASE_URL.
 [ ] Keep SUPABASE_SERVICE_ROLE_KEY.
 [ ] Keep EVE_ADMIN_PASSWORD.
-[ ] Delete RAILWAY_PUBLIC_URL.
-[ ] Trigger a fresh deploy.
+[ ] Keep RAILWAY_PUBLIC_URL.
+[ ] RAILWAY_PUBLIC_URL should be https://confluence1-production.up.railway.app unless Railway shows a different URL.
+[ ] Trigger a fresh deploy if Netlify does not start automatically.
 
 RAILWAY
-[ ] Disable or delete the old Railway service.
+[ ] Keep the existing confluence1 service.
+[ ] Confirm it is connected to the confluence2 GitHub repository.
+[ ] Root directory: railway
+[ ] Start command: npm start
+[ ] Keep TWELVEDATA_API_KEY.
+[ ] Keep SUPABASE_URL.
+[ ] Keep SUPABASE_SERVICE_ROLE_KEY.
+[ ] Confirm deployment is successful.
+[ ] Open https://confluence1-production.up.railway.app/health
+[ ] Confirm ok is true and version is 14.
 
 TEST
-[ ] Open the Netlify URL.
-[ ] Confirm the four scanner freshness cards load.
-[ ] Confirm all 12 markets appear.
-[ ] Open Admin using EVE_ADMIN_PASSWORD.
+[ ] Open the Netlify dashboard.
+[ ] Confirm Railway shows ONLINE, CONNECTED, SUBSCRIBED or NO FOCUS.
+[ ] Confirm all four scanner freshness cards load.
+[ ] Confirm every market currently supplied by the four scanners appears.
+[ ] Confirm Best Market Now always displays a market and a reason.
+[ ] Open Admin with EVE_ADMIN_PASSWORD.
 [ ] Press Scan Now.
-[ ] Confirm market scores still show outside the idea windows.
-[ ] During London or New York hours, confirm EVE can create a Pullback or Breakout & Retest idea.
+[ ] During London or New York hours, confirm one qualifying focus can be created.
+[ ] Confirm Railway switches to that symbol only.
+[ ] Confirm the idea moves FORMING -> GET READY -> ACTIVE when the zone/retest reacts.
+[ ] Confirm an ACTIVE idea stays locked until TP, SL, TP, SL, time-exit or manual close.
