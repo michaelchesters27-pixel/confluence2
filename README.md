@@ -1,10 +1,10 @@
-# EVE Confluence v14
+# EVE Confluence v14.1
 
 This is the complete GitHub-ready replacement for the existing `confluence2` repository.
 
 There are no patch files. Replace the repository contents with this project.
 
-## What v14 does
+## What v14.1 does
 
 EVE keeps the four existing scanners separate:
 
@@ -36,7 +36,7 @@ The old Confluence decision layer misunderstood the live Bias table in two ways:
 - Bearish `bias_score` values are negative by design. The old code clamped them to zero, so strong bearish markets could never qualify.
 - Bias statuses such as `Good watch` and `Watch only` were treated as a prohibition simply because they contained the word `watch`.
 
-v14 uses the absolute directional strength, keeps the separate Bias quality score, and only excludes genuinely unusable states such as `Avoid`, `Closed`, `Stale` or `Error`.
+v14.1 uses the absolute directional strength, keeps the separate Bias quality score, and only excludes genuinely unusable states such as `Avoid`, `Closed`, `Stale` or `Error`.
 
 ## Entry model
 
@@ -89,7 +89,7 @@ Run the one complete file:
 
 `supabase/EVE_FULL_SUPABASE_SETUP.sql`
 
-It preserves historical Confluence rows, adds the v14 live-management fields and resets unfinished old ideas as cancelled.
+It preserves historical Confluence rows, adds the v14.1 live-management fields and resets unfinished old ideas as cancelled.
 
 ## Netlify variables
 

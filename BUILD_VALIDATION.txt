@@ -1,16 +1,17 @@
-EVE CONFLUENCE v14 - BUILD VALIDATION
+EVE Confluence v14.1 build validation
 
-Completed before delivery:
-- All JavaScript files passed Node syntax checks.
-- Engine smoke tests passed, including BUY and SELL zone reactions.
-- Regression test passed for signed bearish EVE bias scores and "Good watch" status.
-- Performance tracking test passed for TP/SL and active time/manual exits.
-- Clean npm ci passed for the Netlify root package.
-- Clean npm ci passed for the Railway package.
-- Frontend JavaScript element references were checked against the HTML.
-- Package and lock JSON files parsed successfully.
-- No node_modules or environment secrets are included.
+FIX INCLUDED
+- Removed every OpenAI internal npm Artifactory URL from both package-lock.json files.
+- Added public npm registry configuration at repository root and inside railway/.
+- Forced Netlify to use Node 22 and the public npm registry.
+- Kept the complete v14 decision engine, dashboard, Supabase SQL and Railway WebSocket manager.
 
-Important:
-- The Supabase SQL was statically reviewed but was not executed against your live Supabase project.
-- Run supabase/EVE_FULL_SUPABASE_SETUP.sql before deploying the code.
+VALIDATION COMPLETED
+- JSON package files parse successfully.
+- Both package-lock files use only https://registry.npmjs.org/ resolved URLs.
+- No internal applied-caas/OpenAI package registry string remains anywhere in the repository.
+- JavaScript syntax checks passed.
+- Engine smoke tests passed.
+
+DEPLOYMENT
+Replace the entire existing GitHub repository contents with this full package. Do not upload only the lockfiles.

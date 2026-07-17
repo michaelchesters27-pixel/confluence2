@@ -1,4 +1,4 @@
-EVE CONFLUENCE v14 - DEPLOY CHECKLIST
+EVE CONFLUENCE v14.1 - DEPLOY CHECKLIST
 
 SUPABASE FIRST
 [ ] Open the same Supabase project used by EVE Bias, Zones, Structure and Liquidity.
