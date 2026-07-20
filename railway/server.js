@@ -20,7 +20,7 @@ app.use(cors());
 app.use(express.json());
 
 const state = {
-  version: '14.3',
+  version: '14.4',
   focusSymbol: null,
   focusDirection: null,
   ws: null,
@@ -576,7 +576,7 @@ async function processActiveIdea(idea, price, now) {
     const status = won ? 'won' : 'lost';
     const resultR = won ? Number(idea.rr || 0) : -1;
     const note = won ? `TP HIT at ${price}. Trade completed +${round(resultR, 2)}R.` : `SL HIT at ${price}. Trade completed -1R.`;
-    await supabase.from('eve_confluence_trade_ideas').update({
+    const { error: completionError } = await supabase.from('eve_confluence_trade_ideas').update({
       status,
       outcome: won ? 'win' : 'loss',
       result_r: resultR,
@@ -588,6 +588,7 @@ async function processActiveIdea(idea, price, now) {
       ...metrics,
       updated_at: now
     }).eq('id', idea.id);
+    if (completionError) throw new Error(`Could not record completed trade: ${completionError.message}`);
     await clearFocusAfterClose(idea, status, note, now);
     await logEvent(won ? 'idea_won' : 'idea_lost', idea.symbol, idea.id, note, { price, resultR, ...metrics });
     return;
@@ -601,7 +602,7 @@ async function processActiveIdea(idea, price, now) {
     const resultR = risk > 0 ? move / risk : null;
     const outcome = Math.abs(Number(resultR || 0)) <= 0.05 ? 'break_even' : 'time_exit';
     const note = `Active trade time-exit at ${round(resultR || 0, 2)}R using live price ${price}.`;
-    await supabase.from('eve_confluence_trade_ideas').update({
+    const { error: expiryError } = await supabase.from('eve_confluence_trade_ideas').update({
       status: 'closed',
       outcome,
       result_r: resultR,
@@ -613,6 +614,7 @@ async function processActiveIdea(idea, price, now) {
       ...metrics,
       updated_at: now
     }).eq('id', idea.id);
+    if (expiryError) throw new Error(`Could not record active trade time-exit: ${expiryError.message}`);
     await clearFocusAfterClose(idea, 'closed', note, now);
     await logEvent('idea_time_exit', idea.symbol, idea.id, note, { price, resultR, ...metrics });
     return;
@@ -632,7 +634,7 @@ async function processActiveIdea(idea, price, now) {
 }
 
 async function closeBeforeEntry(idea, price, now, status, note) {
-  await supabase.from('eve_confluence_trade_ideas').update({
+  const { error } = await supabase.from('eve_confluence_trade_ideas').update({
     status,
     outcome: status,
     completed_at: now,
@@ -643,21 +645,23 @@ async function closeBeforeEntry(idea, price, now, status, note) {
     latest_note: note,
     updated_at: now
   }).eq('id', idea.id);
+  if (error) throw new Error(`Could not close pre-entry idea: ${error.message}`);
   await clearFocusAfterClose(idea, status, note, now);
   await logEvent(`idea_${status}`, idea.symbol, idea.id, note, { price });
 }
 
 async function clearFocusAfterClose(idea, status, note, now) {
-  await supabase.from('eve_confluence_current_focus').upsert({
+  const clearedReason = `${note} Focus cleared. EVE is ready for the next in-session scan.`;
+  const { error } = await supabase.from('eve_confluence_current_focus').upsert({
     id: 'current',
-    status,
+    status: 'cleared',
     symbol: null,
     direction: null,
     idea_id: null,
     confluence_score: 0,
     railway_symbol: null,
     railway_status: 'no_focus',
-    reason: note,
+    reason: clearedReason,
     locked_at: null,
     lock_until: null,
     last_live_price: null,
@@ -665,6 +669,18 @@ async function clearFocusAfterClose(idea, status, note, now) {
     raw: { completed_idea_id: idea.id, completed_symbol: idea.symbol, completed_status: status },
     updated_at: now
   });
+  // Release the live subscription immediately. Do not wait for the next 3-second focus poll.
+  // This local release still happens if the database write reports an error.
+  state.lastFocusRow = {
+    id: 'current', status: 'cleared', symbol: null, direction: null, idea_id: null,
+    railway_symbol: null, railway_status: 'no_focus', reason: clearedReason, updated_at: now
+  };
+  state.focusSymbol = null;
+  state.focusDirection = null;
+  state.lastDesiredSymbol = null;
+  connectSymbol(null);
+
+  if (error) throw new Error(`Could not clear completed focus: ${error.message}`);
 }
 
 function desiredSymbolFromFocus(focus) {

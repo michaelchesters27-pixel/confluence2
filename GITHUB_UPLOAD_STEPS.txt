@@ -1,8 +1,8 @@
-EVE CONFLUENCE v14.3 - COMPLETE GITHUB DELIVERY
+EVE CONFLUENCE v14.4 - COMPLETE GITHUB DELIVERY
 
-1. Existing v14.2 deployment: do NOT rerun Supabase SQL for this v14.3 code-only upgrade.
-   Brand-new installation only: run supabase/EVE_FULL_SUPABASE_SETUP.sql once.
+This is a full GitHub-ready replacement. It is not a patch.
 
+1. Do NOT rerun Supabase SQL for this v14.4 update.
 2. Open GitHub.
 3. Open the existing repository: confluence2
 4. Delete the old repository files and folders.

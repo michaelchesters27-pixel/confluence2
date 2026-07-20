@@ -1,10 +1,16 @@
-# EVE Confluence v14.3
+# EVE Confluence v14.4
 
 This is the complete GitHub-ready replacement for the existing `confluence2` repository.
 
 There are no patch files. Replace the repository contents with this project.
 
-## v14.3 live-status and plan-safety fixes
+## v14.4 focused fixes
+
+- When TP, SL, expiry, cancellation or invalidation finishes an idea, the database focus is cleared, the Railway subscription is released immediately, and EVE is ready for the next in-session scan.
+- A closed idea can no longer remain displayed as the current live focus.
+- While an idea is open, every dashboard card for that same symbol uses the locked idea's trigger, SL, TP, strategy and score. Fresh rescans cannot show a second conflicting plan for the focused market.
+
+## Previous v14.3 live-status and plan-safety fixes
 
 - Railway activity is inferred from fresh Supabase live-price updates when Netlify cannot reach the Railway `/health` endpoint directly. The dashboard no longer calls a working service `OFFLINE`.
 - `REST FALLBACK` is shown as a degraded but online state, distinct from a live WebSocket feed.
@@ -92,7 +98,7 @@ No new focus is selected outside these windows. Any existing idea continues live
 
 ## Supabase
 
-For an existing v14.2 deployment, this v14.3 upgrade is code-only: **do not rerun the SQL**.
+For an existing v14.3 deployment, this v14.4 upgrade is code-only: **do not rerun the SQL**.
 
 For a brand-new installation, run the one complete file once:
 
@@ -128,9 +134,16 @@ Railway service settings:
 
 ## Deployment order
 
-1. Run `supabase/EVE_FULL_SUPABASE_SETUP.sql`.
-2. Replace the contents of the existing `confluence2` GitHub repository.
-3. Let Netlify deploy.
-4. Let Railway deploy from the same repository.
-5. Open the Railway `/health` URL and confirm `ok: true`.
-6. Open the Netlify dashboard and press **Scan Now**.
+### Existing v14.3 installation
+
+1. Replace the contents of the existing `confluence2` GitHub repository.
+2. Let Netlify deploy.
+3. Let Railway deploy from the same repository.
+4. Open the Railway `/health` URL and confirm `ok: true` and version `14.4`.
+5. Open the Netlify dashboard and press **Scan Now**.
+
+**No SQL update is required for this v14.4 change.**
+
+### Brand-new installation only
+
+Run `supabase/EVE_FULL_SUPABASE_SETUP.sql` once before deploying the code.

@@ -652,6 +652,42 @@ async function getCurrentFocus(supabase) {
   return error ? null : (data || null);
 }
 
+function lockedDisplayAsset(idea, asset = {}) {
+  if (!idea) return asset || null;
+  return {
+    ...(asset || {}),
+    symbol: idea.symbol,
+    display_name: asset?.display_name || idea.symbol,
+    asset_class: asset?.asset_class || null,
+    direction: idea.direction,
+    status: idea.status,
+    strategy_type: idea.strategy_type,
+    session_name: idea.session_name,
+    confluence_score: Number(idea.idea_score || asset?.confluence_score || 0),
+    reason: idea.latest_note || idea.reason || asset?.reason || 'Current focus is locked.',
+    latest_price: idea.last_live_price ?? asset?.latest_price ?? null,
+    planned_entry: idea.planned_entry,
+    stop_loss: idea.stop_loss,
+    target_price: idea.take_profit,
+    risk_amount: idea.risk_amount,
+    reward_amount: idea.reward_amount,
+    rr: idea.rr,
+    demand_low: idea.demand_low,
+    demand_high: idea.demand_high,
+    supply_low: idea.supply_low,
+    supply_high: idea.supply_high,
+    target_source: idea.target_source,
+    sl_reason: idea.sl_reason,
+    is_locked_focus: true,
+    raw: {
+      ...(asset?.raw || {}),
+      ...(idea.raw || {}),
+      trigger_needed: idea.raw?.trade_engine?.trigger_needed || asset?.raw?.trigger_needed || null,
+      locked_idea_id: idea.id
+    }
+  };
+}
+
 async function setFocus(supabase, fields) {
   const current = await getCurrentFocus(supabase);
   const row = { ...(current || {}), id: 'current', ...fields, updated_at: nowIso() };
@@ -988,14 +1024,34 @@ async function getLatestState(supabase) {
     loadInputs(supabase, now, maxAge)
   ]);
   const scanId = latestRunRow?.assets_checked > 0 ? latestRunRow.id : latestScoredRunRow?.id;
-  const assets = scanId ? await rowsForScan(supabase, 'eve_confluence_asset_scores', scanId) : [];
-  const currentIdea = await getIdea(supabase, focus?.idea_id);
+  const scoredAssets = scanId ? await rowsForScan(supabase, 'eve_confluence_asset_scores', scanId) : [];
+  const focusedIdea = await getIdea(supabase, focus?.idea_id);
+  const currentIdea = focusedIdea && isOpenIdeaStatus(focusedIdea.status) ? focusedIdea : null;
+  const safeFocus = currentIdea
+    ? focus
+    : {
+        ...(focus || {}),
+        symbol: null,
+        direction: null,
+        idea_id: null,
+        railway_symbol: null,
+        railway_status: 'no_focus',
+        last_live_price: null,
+        last_live_at: null,
+        status: isOpenIdeaStatus(focus?.status) ? 'cleared' : (focus?.status || 'waiting')
+      };
+  const assets = currentIdea
+    ? scoredAssets.map((asset) => asset.symbol === currentIdea.symbol ? lockedDisplayAsset(currentIdea, asset) : asset)
+    : scoredAssets;
+  const focusedAsset = currentIdea
+    ? lockedDisplayAsset(currentIdea, assets.find((asset) => asset.symbol === currentIdea.symbol) || {})
+    : null;
   return {
     latest_run: latestRunRow,
     latest_decision_run: latestScoredRunRow,
-    focus,
+    focus: safeFocus,
     current_idea: currentIdea,
-    best_candidate: assets[0] || focus?.raw?.top_candidate || null,
+    best_candidate: focusedAsset || assets[0] || safeFocus?.raw?.top_candidate || null,
     assets,
     recent_ideas: recentIdeas.data || [],
     source_freshness: {
@@ -1087,5 +1143,6 @@ module.exports = {
   priceBuffer,
   sessionState,
   activeSessionAt,
-  buildMarketChoice
+  buildMarketChoice,
+  lockedDisplayAsset
 };

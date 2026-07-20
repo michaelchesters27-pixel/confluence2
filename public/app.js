@@ -60,7 +60,8 @@ function statusLabel(status) {
     outside_session: 'OUTSIDE SESSION',
     scanning: 'SCANNING',
     engine_off: 'OFF',
-    waiting: 'WAITING'
+    waiting: 'WAITING',
+    cleared: 'READY FOR NEXT IDEA'
   };
   return labels[status] || String(status || 'WAITING').replaceAll('_', ' ').toUpperCase();
 }
@@ -213,20 +214,23 @@ function renderBestNow(data) {
     return;
   }
   const direction = best.direction || 'none';
+  const locked = Boolean(best.is_locked_focus || (data.current_idea && data.current_idea.symbol === best.symbol));
   box.innerHTML = `
     <div class="best-main">
       <div>
-        <span class="section-kicker">Rank #${escapeHtml(best.rank || 1)}</span>
+        <span class="section-kicker">${locked ? 'LOCKED CURRENT FOCUS · SAME NUMBERS' : `Rank #${escapeHtml(best.rank || 1)}`}</span>
         <strong>${escapeHtml(best.symbol)} <em class="${escapeHtml(direction)}">${escapeHtml(String(direction).toUpperCase())}</em></strong>
         <p>${escapeHtml(best.reason || 'No reason saved.')}</p>
       </div>
       <div class="best-score">${Math.round(Number(best.confluence_score || 0))}%</div>
     </div>
     <div class="best-details">
-      <div><span>Status</span><strong>${escapeHtml(statusLabel(best.status))}</strong></div>
+      <div><span>Status</span><strong>${escapeHtml(locked ? 'LOCKED FOCUS' : statusLabel(best.status))}</strong></div>
       <div><span>Strategy</span><strong>${escapeHtml(strategyLabel(best.strategy_type))}</strong></div>
       <div><span>Price</span><strong>${formatPrice(best.latest_price, best.symbol)}</strong></div>
       <div><span>Trigger</span><strong>${formatPrice(best.planned_entry, best.symbol)}</strong></div>
+      <div><span>SL</span><strong>${formatPrice(best.stop_loss, best.symbol)}</strong></div>
+      <div><span>TP</span><strong>${formatPrice(best.target_price, best.symbol)}</strong></div>
       <div><span>R:R</span><strong>${Number(best.rr) ? `1:${Number(best.rr).toFixed(2)}` : '--'}</strong></div>
     </div>`;
 }
@@ -241,6 +245,7 @@ function renderMarkets(data) {
   grid.innerHTML = assets.map((asset) => {
     const direction = asset.direction || 'none';
     const score = Math.round(Number(asset.confluence_score || 0));
+    const locked = Boolean(asset.is_locked_focus || (data.current_idea && data.current_idea.symbol === asset.symbol));
     return `
       <article class="market-card ${escapeHtml(asset.status || '')}">
         <div class="market-top">
@@ -249,7 +254,7 @@ function renderMarkets(data) {
             <span class="market-direction ${escapeHtml(direction)}">${escapeHtml(String(direction).toUpperCase())}</span>
           </div>
           <div>
-            <div class="market-status">${escapeHtml(statusLabel(asset.status))}</div>
+            <div class="market-status">${escapeHtml(locked ? 'LOCKED FOCUS' : statusLabel(asset.status))}</div>
             <div class="market-score">${score}%</div>
           </div>
         </div>

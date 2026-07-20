@@ -10,3 +10,10 @@ EVE Confluence v14.3 validation
 - Zero/negative target regression test: PASSED
 - Maximum planned R:R protection: ENABLED (default 1:25)
 - Railway health fallback through fresh Supabase live updates: ENABLED
+
+
+v14.4 focused validation:
+- Terminal lifecycle clears focus and immediately releases Railway subscription.
+- Closed ideas are not returned as current_idea.
+- Focused symbol cards use locked trigger/SL/TP values across the dashboard.
+- No SQL schema change.

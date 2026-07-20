@@ -151,4 +151,4 @@ assert.equal(performance.completedTrades, 2);
 assert.equal(performance.totalR, 2.4);
 assert.equal(performance.noTrigger, 1);
 
-console.log('EVE Confluence v14.3 smoke tests passed.');
+console.log('EVE Confluence v14.4 smoke tests passed.');

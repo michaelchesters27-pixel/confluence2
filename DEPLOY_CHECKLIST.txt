@@ -1,11 +1,8 @@
-EVE CONFLUENCE v14.3 - DEPLOY CHECKLIST
+EVE CONFLUENCE v14.4 - DEPLOY CHECKLIST
 
-SUPABASE FIRST
-[ ] Open the same Supabase project used by EVE Bias, Zones, Structure and Liquidity.
-[ ] Open supabase/EVE_FULL_SUPABASE_SETUP.sql from this ZIP.
-[ ] Copy the entire SQL into Supabase SQL Editor.
-[ ] Run it once.
-[ ] Confirm it finishes without an error.
+THIS v14.4 UPDATE
+[ ] No Supabase SQL update is required for an existing v14.3 installation.
+[ ] Do not rerun EVE_FULL_SUPABASE_SETUP.sql.
 
 GITHUB
 [ ] Open the existing repository: confluence2
@@ -23,7 +20,6 @@ NETLIFY
 [ ] Keep SUPABASE_SERVICE_ROLE_KEY.
 [ ] Keep EVE_ADMIN_PASSWORD.
 [ ] Keep RAILWAY_PUBLIC_URL.
-[ ] RAILWAY_PUBLIC_URL must be the public URL copied from the Railway service. Do not store the live URL in GitHub.
 [ ] Trigger a fresh deploy if Netlify does not start automatically.
 
 RAILWAY
@@ -35,18 +31,10 @@ RAILWAY
 [ ] Keep SUPABASE_URL.
 [ ] Keep SUPABASE_SERVICE_ROLE_KEY.
 [ ] Confirm deployment is successful.
-[ ] Open your Railway public URL followed by /health
-[ ] Confirm ok is true and version is 14.3.
+[ ] Open your Railway public URL followed by /health.
+[ ] Confirm ok is true and version is 14.4.
 
-TEST
-[ ] Open the Netlify dashboard.
-[ ] Confirm Railway shows ONLINE, CONNECTED, SUBSCRIBED or NO FOCUS.
-[ ] Confirm all four scanner freshness cards load.
-[ ] Confirm every market currently supplied by the four scanners appears.
-[ ] Confirm Best Market Now always displays a market and a reason.
-[ ] Open Admin with EVE_ADMIN_PASSWORD.
-[ ] Press Scan Now.
-[ ] During London or New York hours, confirm one qualifying focus can be created.
-[ ] Confirm Railway switches to that symbol only.
-[ ] Confirm the idea moves FORMING -> GET READY -> ACTIVE when the zone/retest reacts.
-[ ] Confirm an ACTIVE idea stays locked until TP, SL, time-exit or manual close.
+CHECK THE TWO v14.4 FIXES
+[ ] While a focus is open, its trigger, SL and TP are identical everywhere that symbol appears.
+[ ] When EVE records TP, SL, expiry, invalidation or cancellation, Railway changes to NO FOCUS.
+[ ] The completed market clears and EVE is ready for the next in-session scan.
